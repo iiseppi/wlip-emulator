@@ -11,7 +11,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "0.0.1"
+VERSION      = "0.0.2"
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'wlip emulator'
 AUTHOR       = "iiseppi"
