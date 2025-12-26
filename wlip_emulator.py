@@ -1,6 +1,10 @@
 # WLIP Emulator for WeeWX
-# Version: 43
-# iiseppi@gmail.com
+# Version: 48 (Fixes EEPROM Interval Address)
+# 
+# Changes:
+# - FIXED: Archive Interval is now correctly located at EEPROM address 0x2D (was 0x2B).
+#   This allows clients like WeatherCat to correctly calculate history download requirements.
+# - RETAINED: Smart Catch-up logic for 0-timestamp requests.
 
 import socket
 import threading
@@ -85,11 +89,28 @@ class WeatherLinkEmulator(StdService):
         self.engine = engine
         self.config_dict = config_dict 
         
-        self.eeprom = bytearray(256)
-        self.eeprom[0x2B] = 1 
-        self.eeprom[0x2D] = 0x00 
+        # Determine Interval
+        interval_seconds = 300 
+        std_archive = config_dict.get('StdArchive', {})
+        if 'archive_interval' in std_archive:
+            interval_seconds = int(std_archive['archive_interval'])
+        if 'archive_interval' in options:
+            val = int(options['archive_interval'])
+            interval_seconds = val * 60
+        self.davis_interval_mins = max(1, int(interval_seconds / 60))
         
-        loginf("*** WLIP EMULATOR V43 WRD-FIX (Port %s) ***" % self.port)
+        # --- EEPROM SETUP FIXED ---
+        self.eeprom = bytearray(256)
+        # 0x2B is Setup Bits (should not hold interval)
+        self.eeprom[0x2B] = 0x00 
+        # 0x2D is Archive Interval (decimal 45) - This is the correct location
+        self.eeprom[0x2D] = self.davis_interval_mins 
+        
+        # DB Binding selector
+        self.db_binding = options.get('binding', 'wx_binding')
+        
+        loginf("*** WLIP EMULATOR V48 SMART-CATCHUP (Port %s) ***" % self.port)
+        loginf("    -> Interval: %d mins" % self.davis_interval_mins)
         
         self.server_thread = threading.Thread(target=self.run_server)
         self.server_thread.daemon = True
@@ -134,8 +155,6 @@ class WeatherLinkEmulator(StdService):
                 elif 'TEST' in cmd:
                     client_sock.sendall(b'\n\rTEST\n\r')
                 elif 'WRD' in cmd:
-                    # FIX: Send only ACK. Client will then send params.
-                    # Previous \x06\x10 confused CumulusMX.
                     client_sock.sendall(b'\x06')
                 elif 'VVPVER' in cmd:
                     client_sock.sendall(b'\n\rOK\n\r')
@@ -156,7 +175,6 @@ class WeatherLinkEmulator(StdService):
                 elif 'LOOP' in cmd:
                     self.handle_loop(client_sock)
                 elif 'LPS' in cmd:
-                    # Force Standard Loop 1 (Type 0) for stability
                     self.handle_loop(client_sock)
                 elif 'BARREAD' in cmd:
                     payload = b'\x00\x00' 
@@ -184,19 +202,18 @@ class WeatherLinkEmulator(StdService):
             if len(parts) >= 3:
                 addr = int(parts[1], 16)
                 length = int(parts[2], 16)
-                
                 data_chunk = bytearray()
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
-                    if curr_addr == 0x2B:
-                        val = 1
+                    # FIXED: Check address 0x2D for Interval
+                    if curr_addr == 0x2D:
+                        val = self.davis_interval_mins
                     elif curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
                     data_chunk.append(val)
                 crc = crc16(data_chunk)
                 packet = data_chunk + struct.pack('>H', crc)
-                
                 sock.sendall(b'\x06' + packet)
         except Exception as e:
             logdbg("EEBRD Error: %s" % e)
@@ -211,13 +228,13 @@ class WeatherLinkEmulator(StdService):
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
-                    if curr_addr == 0x2B:
-                        val = 1
+                    # FIXED: Check address 0x2D for Interval
+                    if curr_addr == 0x2D:
+                        val = self.davis_interval_mins
                     elif curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
                     hex_str += "%02X" % val
                 resp = hex_str.encode('utf-8') + b'\n\r' 
-                
                 sock.sendall(b'\x06' + resp)
         except Exception as e:
             logdbg("EERD Error: %s" % e)
@@ -263,33 +280,51 @@ class WeatherLinkEmulator(StdService):
             return
         if len(ts_data) != 6: return
 
+        # Log received raw TS
+        # logdbg("DMPAFT Raw TS Data: %s" % binascii.hexlify(ts_data))
+
         davis_date = struct.unpack('<H', ts_data[0:2])[0]
         davis_time = struct.unpack('<H', ts_data[2:4])[0]
         
         requested_ts = 0
         try:
-            day = davis_date & 0x1F
-            month = (davis_date >> 5) & 0x0F
-            year = (davis_date >> 9) + 2000
-            hour = int(davis_time / 100)
-            minute = davis_time % 100
-            dt = datetime.datetime(year, month, day, hour, minute)
-            requested_ts = time.mktime(dt.timetuple())
-            logdbg("HISTORY REQUEST: Asking for data after: %s" % dt)
+            # Check if Client requests data from the beginning (0)
+            if davis_date == 0 and davis_time == 0:
+                # V47 FIX: Don't give them 2013 data.
+                # Force start to 24 hours ago.
+                requested_ts = int(time.time() - 86400)
+                logdbg("HISTORY REQUEST: Zero TS detected. Forcing catch-up to last 24h (%s)" % requested_ts)
+            else:
+                day = davis_date & 0x1F
+                month = (davis_date >> 5) & 0x0F
+                year = (davis_date >> 9) + 2000
+                hour = int(davis_time / 100)
+                minute = davis_time % 100
+                dt = datetime.datetime(year, month, day, hour, minute)
+                requested_ts = time.mktime(dt.timetuple())
+                logdbg("HISTORY REQUEST: Asking for data after: %s (%s)" % (dt, requested_ts))
         except Exception as e:
-            logdbg("HISTORY REQUEST: Invalid timestamp decode, defaulting to 0.")
-            requested_ts = 0
+            # Fallback if decode fails
+            requested_ts = int(time.time() - 86400)
+            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to last 24h.")
 
         client_sock.sendall(b'\x06')
 
         records = []
         try:
-            with weewx.manager.open_manager_with_config(self.config_dict, 'wx_binding') as manager:
+            with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
                 for record in manager.genBatchRecords(requested_ts + 1):
                     records.append(record)
-                    if len(records) >= 2560: break 
+                    if len(records) >= 2600: break 
             
             logdbg("DB DEBUG: Found %d records to send." % len(records))
+            
+            if len(records) > 0:
+                first_rec = records[0]
+                loginf("DB DEBUG RECORD [0]: Time=%s outTemp=%s" % (
+                    first_rec.get('dateTime'), 
+                    first_rec.get('outTemp')
+                ))
             
         except Exception as e:
             logerr("DB ERROR: Failed to query database: %s" % e)
@@ -442,7 +477,6 @@ class WeatherLinkEmulator(StdService):
         except:
             packet[3] = 0
         
-        # ALWAYS TYPE 0 (LOOP 1) for stability
         packet[4] = 0 
             
         struct.pack_into('<H', packet, 5, 0)
