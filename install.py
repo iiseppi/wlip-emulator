@@ -11,7 +11,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "0.0.2"
+VERSION      = "0.3.49"
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'wlip emulator'
 AUTHOR       = "iiseppi"
@@ -50,8 +50,9 @@ extension_config = """
     
     # Optional: Force the reported archive interval in minutes.
     # IMPORTANT: If your client software (e.g. WeatherCat) expects 1 minute
-    # but WeeWX is set to 5 minutes, force this to 1.
-    archive_interval = 1
+    # but WeeWX is set to 5 minutes, force this to 1. 
+    # In many cases, you can leave this commented out to use WeeWX's archive interval.
+    # archive_interval = 1
 
 """
 config_dict = configobj.ConfigObj(StringIO(extension_config))
