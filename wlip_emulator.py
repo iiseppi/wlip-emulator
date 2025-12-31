@@ -1,10 +1,11 @@
 # WLIP Emulator for WeeWX
-# Version: 48 (Fixes EEPROM Interval Address)
+# Version: 49 (30-Day History & Fixes)
 # 
 # Changes:
-# - FIXED: Archive Interval is now correctly located at EEPROM address 0x2D (was 0x2B).
-#   This allows clients like WeatherCat to correctly calculate history download requirements.
-# - RETAINED: Smart Catch-up logic for 0-timestamp requests.
+# - HISTORY: Catch-up logic extended to 30 days (was 24h) for fresh installs.
+# - BUFFER: Increased max record batch to 50,000 to accommodate 30 days of 1-min data.
+# - FIXED: Archive Interval reported correctly at EEPROM 0x2D.
+# - INCLUDED: Atomic sends and Loop Type 0 for stability.
 
 import socket
 import threading
@@ -99,17 +100,17 @@ class WeatherLinkEmulator(StdService):
             interval_seconds = val * 60
         self.davis_interval_mins = max(1, int(interval_seconds / 60))
         
-        # --- EEPROM SETUP FIXED ---
+        # --- EEPROM SETUP FIXED (V48+) ---
         self.eeprom = bytearray(256)
         # 0x2B is Setup Bits (should not hold interval)
         self.eeprom[0x2B] = 0x00 
-        # 0x2D is Archive Interval (decimal 45) - This is the correct location
+        # 0x2D is Archive Interval (decimal 45) - This is the correct location for WeatherCat
         self.eeprom[0x2D] = self.davis_interval_mins 
         
         # DB Binding selector
         self.db_binding = options.get('binding', 'wx_binding')
         
-        loginf("*** WLIP EMULATOR V48 SMART-CATCHUP (Port %s) ***" % self.port)
+        loginf("*** WLIP EMULATOR V49 SMART-CATCHUP (Port %s) ***" % self.port)
         loginf("    -> Interval: %d mins" % self.davis_interval_mins)
         
         self.server_thread = threading.Thread(target=self.run_server)
@@ -280,9 +281,6 @@ class WeatherLinkEmulator(StdService):
             return
         if len(ts_data) != 6: return
 
-        # Log received raw TS
-        # logdbg("DMPAFT Raw TS Data: %s" % binascii.hexlify(ts_data))
-
         davis_date = struct.unpack('<H', ts_data[0:2])[0]
         davis_time = struct.unpack('<H', ts_data[2:4])[0]
         
@@ -290,10 +288,9 @@ class WeatherLinkEmulator(StdService):
         try:
             # Check if Client requests data from the beginning (0)
             if davis_date == 0 and davis_time == 0:
-                # V47 FIX: Don't give them 2013 data.
-                # Force start to 24 hours ago.
-                requested_ts = int(time.time() - 86400)
-                logdbg("HISTORY REQUEST: Zero TS detected. Forcing catch-up to last 24h (%s)" % requested_ts)
+                # V49 FIX: Catch-up to last 30 DAYS (30 * 24h = 2592000 sec)
+                requested_ts = int(time.time() - 2592000)
+                logdbg("HISTORY REQUEST: Zero TS detected. Forcing catch-up to last 30 days (%s)" % requested_ts)
             else:
                 day = davis_date & 0x1F
                 month = (davis_date >> 5) & 0x0F
@@ -304,9 +301,9 @@ class WeatherLinkEmulator(StdService):
                 requested_ts = time.mktime(dt.timetuple())
                 logdbg("HISTORY REQUEST: Asking for data after: %s (%s)" % (dt, requested_ts))
         except Exception as e:
-            # Fallback if decode fails
-            requested_ts = int(time.time() - 86400)
-            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to last 24h.")
+            # Fallback if decode fails, default to 30 days
+            requested_ts = int(time.time() - 2592000)
+            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to last 30 days.")
 
         client_sock.sendall(b'\x06')
 
@@ -315,7 +312,9 @@ class WeatherLinkEmulator(StdService):
             with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
                 for record in manager.genBatchRecords(requested_ts + 1):
                     records.append(record)
-                    if len(records) >= 2600: break 
+                    # V49 FIX: Increase buffer limit for 30 days data
+                    # 1 min interval = ~43200 records in 30 days. Set safe limit to 50000.
+                    if len(records) >= 50000: break 
             
             logdbg("DB DEBUG: Found %d records to send." % len(records))
             
