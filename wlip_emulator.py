@@ -1,11 +1,12 @@
 # WLIP Emulator for WeeWX
-# Version: 49 (30-Day History & Fixes)
+# Version: 50 (Zombie Fix & Stale Data Prevention)
 # 
 # Changes:
-# - HISTORY: Catch-up logic extended to 30 days (was 24h) for fresh installs.
-# - BUFFER: Increased max record batch to 50,000 to accommodate 30 days of 1-min data.
+# - V50: Added shutDown() to prevent "Address already in use" on restarts.
+# - V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
+# - HISTORY: Catch-up logic extended to 30 days.
+# - BUFFER: Increased max record batch to 50,000.
 # - FIXED: Archive Interval reported correctly at EEPROM 0x2D.
-# - INCLUDED: Atomic sends and Loop Type 0 for stability.
 
 import socket
 import threading
@@ -15,6 +16,7 @@ import time
 import math
 import datetime
 import binascii
+import sys
 import weewx
 import weewx.units
 import weewx.manager 
@@ -90,6 +92,10 @@ class WeatherLinkEmulator(StdService):
         self.engine = engine
         self.config_dict = config_dict 
         
+        # V50: Stale data tracking
+        self.last_update_time = 0
+        self.server_sock = None
+        
         # Determine Interval
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
@@ -110,7 +116,7 @@ class WeatherLinkEmulator(StdService):
         # DB Binding selector
         self.db_binding = options.get('binding', 'wx_binding')
         
-        loginf("*** WLIP EMULATOR V49 SMART-CATCHUP (Port %s) ***" % self.port)
+        loginf("*** WLIP EMULATOR V50 (Port %s) ***" % self.port)
         loginf("    -> Interval: %d mins" % self.davis_interval_mins)
         
         self.server_thread = threading.Thread(target=self.run_server)
@@ -119,21 +125,44 @@ class WeatherLinkEmulator(StdService):
         
         self.bind(weewx.NEW_LOOP_PACKET, self.handle_new_loop)
 
+    def shutDown(self):
+        """V50: Called when WeeWX terminates or restarts."""
+        loginf("Shutting down WLIP Server...")
+        try:
+            if self.server_sock:
+                try:
+                    self.server_sock.shutdown(socket.SHUT_RDWR)
+                except:
+                    pass
+                self.server_sock.close()
+                self.server_sock = None
+        except Exception as e:
+            logerr("Error during shutdown: %s" % e)
+
     def handle_new_loop(self, event):
         with self.lock:
             self.current_loop_packet = event.packet
+            # V50: Update timestamp when we get fresh data
+            self.last_update_time = time.time()
 
     def run_server(self):
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.settimeout(None)
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # V50: Use self.server_sock so we can close it in shutDown
+        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_sock.settimeout(None)
+        # Fix for 'Address already in use'
+        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         try:
-            server_sock.bind(('0.0.0.0', self.port))
-            server_sock.listen(self.max_clients)
+            self.server_sock.bind(('0.0.0.0', self.port))
+            self.server_sock.listen(self.max_clients)
             
             while True:
-                client_sock, addr = server_sock.accept()
+                try:
+                    client_sock, addr = self.server_sock.accept()
+                except OSError:
+                    # Socket closed (likely due to shutDown)
+                    break
+                    
                 client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 logdbg("Incoming connection from %s (NODELAY)" % str(addr))
                 client_sock.settimeout(None)
@@ -141,7 +170,9 @@ class WeatherLinkEmulator(StdService):
                 client_thread.daemon = True
                 client_thread.start()
         except Exception as e:
-            logerr("Server crashed: %s" % e)
+            # If socket is None, we likely shut it down intentionally
+            if self.server_sock is not None:
+                logerr("Server crashed: %s" % e)
 
     def handle_client(self, client_sock):
         try:
@@ -267,6 +298,17 @@ class WeatherLinkEmulator(StdService):
         client_sock.sendall(resp)
 
     def handle_loop(self, client_sock):
+        # V50: STALE DATA CHECK
+        # If data is older than 120 seconds, we do not send anything.
+        # This prevents the emulator from lying about the weather during outages.
+        age = time.time() - self.last_update_time
+        if age > 120:
+             # Just return, causing a timeout on client side eventually, or silence.
+             # This effectively stops the "flat line".
+             if age < 130:
+                 logdbg("STALE DATA WARNING: Data is %d seconds old. Not sending LOOP." % age)
+             return
+
         try:
             packed_data = self.create_davis_loop_packet()
             client_sock.sendall(b'\x06' + packed_data)
