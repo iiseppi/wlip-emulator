@@ -1,4 +1,3 @@
-
 # installer derived from the weewx Belchertown skin installer
 # https://raw.githubusercontent.com/poblabs/weewx-belchertown/master/install.py
 # which was Copyright Pat O'Brien, with re-fomatting from a PR by Vince Skahan 
@@ -11,7 +10,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "0.3.49"
+VERSION      = "0.5"
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'wlip emulator'
 AUTHOR       = "iiseppi"
@@ -42,18 +41,28 @@ class WundergroundLikeInstaller(ExtensionInstaller):
 extension_config = """
 
 [WeatherLinkEmulator]
-    # The port to listen on (Davis default is 22222)
+    # 1. Default Port
+    # This port (22222) is open to all connections.
+    # Should work with WeatherCat, Weather Display and CumulusMX simultaneusly.
     port = 22222
-    
-    # Maximum concurrent clients
-    max_clients = 5
-    
-    # Optional: Force the reported archive interval in minutes.
-    # IMPORTANT: If your client software (e.g. WeatherCat) expects 1 minute
-    # but WeeWX is set to 5 minutes, force this to 1. 
-    # In many cases, you can leave this commented out to use WeeWX's archive interval.
-    # archive_interval = 1
 
+    # 2. Client Mapping (VIP Ports)
+    # Format: IP_ADDRESS:PORT
+    # This maps specific IPs to dedicated ports.
+    # 
+    # EXAMPLES:
+    # Single client:
+    # client_mapping = 192.168.1.50:22223
+    #
+    # Multiple clients (comma separated):
+    # client_mapping = 192.168.1.50:22223, 192.168.1.51:22224, 192.168.1.100:30000
+    #
+    # Note: It is highly recommended to assign a unique VIP port for each WeeWX instance.
+    # client_mapping = 192.168.X.X:22223
+
+    # General settings
+    max_clients = 10
+    binding = wx_binding
 """
 config_dict = configobj.ConfigObj(StringIO(extension_config))
 
