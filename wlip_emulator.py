@@ -1,12 +1,24 @@
 # WLIP Emulator for WeeWX
-# Version: 50 (Zombie Fix & Stale Data Prevention)
-# 
+# Version: 83 
+#
 # Changes:
+# - V83: Updated DMPAFT logic to emulate real Davis Logger memory limits (Hardware Record Limit).
+# - V83: Added 'select' to handle_loop to detect client interrupts (fixes b'LO' error).
+# - V82: Added logging for connection target port info.
+# - V81: Logic update to ensure Default Port remains open alongside VIP Ports.
+# - V80: Added dynamic IP-to-Port mapping via config file.
+# - V79: Added initial Dual Port support.
+# - V78: Implemented Ring Buffer to fix command dropping (CRITICAL FIX).
+# - V77: Fixed sticky packet handling with byte-by-byte check.
+# - V74: Added active connection logging.
+# - V65: Implemented Smart Identity (IP Filtering) for Legacy PC support.
+# - V63: Added NACK response for Mystery Command (0x12 0x4d).
+# - V57-V58: Implemented aggressive wake-up timing for sluggish consoles.
 # - V50: Added shutDown() to prevent "Address already in use" on restarts.
 # - V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
-# - HISTORY: Catch-up logic extended to 30 days.
-# - BUFFER: Increased max record batch to 50,000.
-# - FIXED: Archive Interval reported correctly at EEPROM 0x2D.
+# - V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
+# - V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
+
 
 import socket
 import threading
@@ -15,8 +27,7 @@ import logging
 import time
 import math
 import datetime
-import binascii
-import sys
+import select  # Required for interrupt detection
 import weewx
 import weewx.units
 import weewx.manager 
@@ -38,7 +49,7 @@ def loginf(msg):
 def logerr(msg):
     log.error("WLIP Emulator: %s" % msg)
 
-# CRC-16 table
+HARDWARE_RECORD_LIMIT = 2560
 CRC_TABLE = [
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
     0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
@@ -86,17 +97,37 @@ class WeatherLinkEmulator(StdService):
         super(WeatherLinkEmulator, self).__init__(engine, config_dict)
         options = config_dict.get('WeatherLinkEmulator', {})
         self.port = int(options.get('port', 22222))
-        self.max_clients = int(options.get('max_clients', 5))
+        self.max_clients = int(options.get('max_clients', 10))
         self.current_loop_packet = None
         self.lock = threading.Lock()
         self.engine = engine
         self.config_dict = config_dict 
         
-        # V50: Stale data tracking
         self.last_update_time = 0
-        self.server_sock = None
+        self.server_sockets = [] 
+        self.active_connections = 0
         
-        # Determine Interval
+        # --- PORT MAPPING PARSING ---
+        # Format in config: client_mapping = 192.168.1.10:22223, 192.168.1.11:22224
+        self.port_mappings = {}
+        
+        mapping_str = options.get('client_mapping', '')
+        if mapping_str:
+            try:
+                for pair in mapping_str.split(','):
+                    pair = pair.strip()
+                    if ':' in pair:
+                        ip, p = pair.split(':')
+                        self.port_mappings[int(p)] = ip.strip()
+                        loginf("Configured VIP mapping: IP %s -> Port %s" % (ip.strip(), p))
+            except Exception as e:
+                logerr("Error parsing client_mapping: %s" % e)
+        
+        # V81 FORCE DEFAULT: Ensure the main port (22222) is ALWAYS open to all (None)
+        # This prevents accidental lockout.
+        self.port_mappings[self.port] = None
+        loginf("Default Port %s is OPEN to all connections." % self.port)
+
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
         if 'archive_interval' in std_archive:
@@ -106,127 +137,209 @@ class WeatherLinkEmulator(StdService):
             interval_seconds = val * 60
         self.davis_interval_mins = max(1, int(interval_seconds / 60))
         
-        # --- EEPROM SETUP FIXED (V48+) ---
-        self.eeprom = bytearray(256)
-        # 0x2B is Setup Bits (should not hold interval)
-        self.eeprom[0x2B] = 0x00 
-        # 0x2D is Archive Interval (decimal 45) - This is the correct location for WeatherCat
-        self.eeprom[0x2D] = self.davis_interval_mins 
+        # USER SETTINGS 
+        STATION_LATITUDE = 611
+        STATION_LONGITUDE = 224
+        STATION_TIME_ZONE = 23
+        RAIN_COLLECTOR_TYPE = 0x01
         
-        # DB Binding selector
+        # EEPROM SETUP
+        self.eeprom = bytearray(256)
+        struct.pack_into('<h', self.eeprom, 0x0B, STATION_LATITUDE)
+        struct.pack_into('<h', self.eeprom, 0x0D, STATION_LONGITUDE)
+        self.eeprom[0x12] = STATION_TIME_ZONE
+        self.eeprom[0x2B] = 0x10 | RAIN_COLLECTOR_TYPE
+        self.eeprom[0x2D] = self.davis_interval_mins
+        self.eeprom[0x2E] = 1
+        
         self.db_binding = options.get('binding', 'wx_binding')
         
-        loginf("*** WLIP EMULATOR V50 (Port %s) ***" % self.port)
-        loginf("    -> Interval: %d mins" % self.davis_interval_mins)
+        loginf("*** WLIP EMULATOR V83 (Interruptible Loop) ***")
         
-        self.server_thread = threading.Thread(target=self.run_server)
-        self.server_thread.daemon = True
-        self.server_thread.start()
-        
+        self.run_server()
         self.bind(weewx.NEW_LOOP_PACKET, self.handle_new_loop)
 
     def shutDown(self):
-        """V50: Called when WeeWX terminates or restarts."""
         loginf("Shutting down WLIP Server...")
         try:
-            if self.server_sock:
+            for sock in self.server_sockets:
                 try:
-                    self.server_sock.shutdown(socket.SHUT_RDWR)
+                    sock.shutdown(socket.SHUT_RDWR)
                 except:
                     pass
-                self.server_sock.close()
-                self.server_sock = None
+                sock.close()
+            self.server_sockets = []
         except Exception as e:
             logerr("Error during shutdown: %s" % e)
 
     def handle_new_loop(self, event):
         with self.lock:
             self.current_loop_packet = event.packet
-            # V50: Update timestamp when we get fresh data
             self.last_update_time = time.time()
 
     def run_server(self):
-        # V50: Use self.server_sock so we can close it in shutDown
-        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.settimeout(None)
-        # Fix for 'Address already in use'
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Iterate through all configured ports and start listeners
+        for port, allowed_ip in self.port_mappings.items():
+            t = threading.Thread(target=self.listen_on_port, args=(port, allowed_ip))
+            t.daemon = True
+            t.start()
+
+    def listen_on_port(self, port, allowed_ip):
+        # None means allow everyone
+        access_msg = "ALL (Default)" if allowed_ip is None else allowed_ip
+        loginf("Starting listener on port %d [Allowed: %s]" % (port, access_msg))
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(None)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         try:
-            self.server_sock.bind(('0.0.0.0', self.port))
-            self.server_sock.listen(self.max_clients)
+            sock.bind(('0.0.0.0', port))
+            sock.listen(self.max_clients)
+            self.server_sockets.append(sock)
             
             while True:
                 try:
-                    client_sock, addr = self.server_sock.accept()
+                    client_sock, addr = sock.accept()
                 except OSError:
-                    # Socket closed (likely due to shutDown)
                     break
-                    
+                
+                # --- IP SECURITY CHECK ---
+                if allowed_ip is not None and addr[0] != allowed_ip:
+                    # Optional: Log blocking
+                    # logdbg("Security: Blocked unauthorized IP %s from VIP port %d" % (addr[0], port))
+                    client_sock.close()
+                    continue
+                # -------------------------
+                
                 client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                logdbg("Incoming connection from %s (NODELAY)" % str(addr))
                 client_sock.settimeout(None)
-                client_thread = threading.Thread(target=self.handle_client, args=(client_sock,))
+                client_thread = threading.Thread(target=self.handle_client, args=(client_sock, addr))
                 client_thread.daemon = True
                 client_thread.start()
         except Exception as e:
-            # If socket is None, we likely shut it down intentionally
-            if self.server_sock is not None:
-                logerr("Server crashed: %s" % e)
+            logerr("Error on port %d: %s" % (port, e))
 
-    def handle_client(self, client_sock):
+    def handle_client(self, client_sock, addr):
+        with self.lock:
+            self.active_connections += 1
+            count = self.active_connections
+        
+        # Log which local port received this connection
+        try:
+            local_port = client_sock.getsockname()[1]
+        except:
+            local_port = "Unknown"
+            
+        loginf("Incoming connection from %s to PORT %s. Active: %d" % (str(addr), str(local_port), count))
+
+        buffer = bytearray()
+
         try:
             while True:
                 data = client_sock.recv(1024)
                 if not data: break
                 
-                cmd = data.decode('utf-8', errors='ignore').strip()
+                buffer.extend(data)
+                
+                # Process buffer in a loop to handle coalesced packets
+                while len(buffer) > 0:
+                    
+                    # 1. Immediate Wakeup Check (Newline at start)
+                    if buffer[0] == 0x0A or buffer[0] == 0x0D:
+                        client_sock.sendall(b'\n\r')
+                        buffer = buffer[1:] # Consume 1 byte
+                        continue
+                    
+                    # 2. Command Processing (Wait for full line if possible)
+                    if b'\n' in buffer:
+                        split_idx = buffer.find(b'\n')
+                        cmd_bytes = buffer[:split_idx]
+                        buffer = buffer[split_idx+1:] 
+                        cmd_str = cmd_bytes.decode('utf-8', errors='ignore').strip()
+                        if len(cmd_str) > 0:
+                            self.process_command(client_sock, cmd_str, cmd_bytes)
+                        continue
+                    
+                    # 3. Special cases for binary/non-newline commands (e.g. WRD)
+                    if b'WRD' in buffer:
+                         self.process_command(client_sock, "WRD", buffer)
+                         buffer = bytearray() 
+                         continue
 
-                if data == b'\n':
-                    client_sock.sendall(b'\n\r')
-                elif 'TEST' in cmd:
-                    client_sock.sendall(b'\n\rTEST\n\r')
-                elif 'WRD' in cmd:
-                    client_sock.sendall(b'\x06')
-                elif 'VVPVER' in cmd:
-                    client_sock.sendall(b'\n\rOK\n\r')
-                elif 'GETTIME' in cmd:
-                    self.handle_gettime(client_sock)
-                elif 'NVER' in cmd:
-                    client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
-                elif 'VER' in cmd:
-                    client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
-                elif 'EEBRD' in cmd:
-                    self.handle_eebrd(client_sock, cmd)
-                elif 'EERD' in cmd:
-                    self.handle_eerd(client_sock, cmd)
-                elif 'DMPAFT' in cmd:
-                    self.handle_dmpaft(client_sock)
-                elif 'STR' in cmd:
-                    self.handle_str(client_sock)
-                elif 'LOOP' in cmd:
-                    self.handle_loop(client_sock)
-                elif 'LPS' in cmd:
-                    self.handle_loop(client_sock)
-                elif 'BARREAD' in cmd:
-                    payload = b'\x00\x00' 
-                    crc = crc16(payload)
-                    client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-                elif 'HILOWS' in cmd:
-                    payload = b'\x00' * 436
-                    crc = crc16(payload)
-                    client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-                elif 'RXCHECK' in cmd:
-                    payload = b'\x00\x00\x00\x00\x00'
-                    crc = crc16(payload)
-                    client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-                elif len(cmd) > 0:
-                    pass
+                    break
 
         except Exception as e:
             logdbg("Client connection closed/error: %s" % e)
         finally:
             client_sock.close()
+            with self.lock:
+                self.active_connections -= 1
+                count = self.active_connections
+            loginf("Connection closed from %s. Active: %d" % (str(addr), count))
+
+    def process_command(self, client_sock, cmd, raw_data):
+        # Handle Mystery Command from some Davis software
+        if b'\x12\x4d\x0d' in raw_data: 
+            client_sock.sendall(b'\x21') 
+            return
+
+        if 'TEST' in cmd:
+            client_sock.sendall(b'\n\rTEST\n\r')
+        elif 'WRD' in cmd:
+            client_sock.sendall(b'\x06\x11')
+        elif 'VVPVER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\r')
+        elif 'GETTIME' in cmd:
+            self.handle_gettime(client_sock)
+        elif 'NVER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
+        elif 'VER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
+        elif 'EEBRD' in cmd:
+            self.handle_eebrd(client_sock, cmd)
+        elif 'EERD' in cmd:
+            self.handle_eerd(client_sock, cmd)
+        elif 'DMPAFT' in cmd:
+            self.handle_dmpaft(client_sock)
+        elif 'STR' in cmd:
+            self.handle_str(client_sock)
+        elif 'LOOP' in cmd:
+            pkt_count = 1
+            try:
+                parts = cmd.split()
+                for p in parts:
+                    if p.isdigit():
+                        pkt_count = int(p)
+                        break
+            except:
+                pkt_count = 1
+            if pkt_count == 0: pkt_count = 1 
+            self.handle_loop(client_sock, pkt_count)
+        elif 'LPS' in cmd:
+            pkt_count = 1
+            try:
+                parts = cmd.split()
+                for p in parts:
+                    if p.isdigit():
+                        pkt_count = int(p)
+                        break
+            except:
+                pkt_count = 1
+            if pkt_count == 0: pkt_count = 1
+            self.handle_loop(client_sock, pkt_count)
+        elif 'BARREAD' in cmd:
+            payload = b'\x00\x00' 
+            crc = crc16(payload)
+            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+        elif 'HILOWS' in cmd:
+            payload = b'\x00' * 436
+            crc = crc16(payload)
+            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+        elif 'RXCHECK' in cmd:
+            payload = b'\x00\x00\x00\x00\x00'
+            crc = crc16(payload)
+            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
 
     def handle_eebrd(self, sock, cmd):
         try:
@@ -238,10 +351,7 @@ class WeatherLinkEmulator(StdService):
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
-                    # FIXED: Check address 0x2D for Interval
-                    if curr_addr == 0x2D:
-                        val = self.davis_interval_mins
-                    elif curr_addr < len(self.eeprom):
+                    if curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
                     data_chunk.append(val)
                 crc = crc16(data_chunk)
@@ -260,10 +370,7 @@ class WeatherLinkEmulator(StdService):
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
-                    # FIXED: Check address 0x2D for Interval
-                    if curr_addr == 0x2D:
-                        val = self.davis_interval_mins
-                    elif curr_addr < len(self.eeprom):
+                    if curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
                     hex_str += "%02X" % val
                 resp = hex_str.encode('utf-8') + b'\n\r' 
@@ -297,23 +404,38 @@ class WeatherLinkEmulator(StdService):
         resp = forecast_text.encode('utf-8') + b'\n\r'
         client_sock.sendall(resp)
 
-    def handle_loop(self, client_sock):
-        # V50: STALE DATA CHECK
-        # If data is older than 120 seconds, we do not send anything.
-        # This prevents the emulator from lying about the weather during outages.
-        age = time.time() - self.last_update_time
-        if age > 120:
-             # Just return, causing a timeout on client side eventually, or silence.
-             # This effectively stops the "flat line".
-             if age < 130:
-                 logdbg("STALE DATA WARNING: Data is %d seconds old. Not sending LOOP." % age)
-             return
-
+    def handle_loop(self, client_sock, count):
+        logdbg("Sending %d LOOP packets..." % count)
         try:
-            packed_data = self.create_davis_loop_packet()
-            client_sock.sendall(b'\x06' + packed_data)
-        except socket.error as e:
-            logdbg("Send failed: %s" % e)
+            client_sock.sendall(b'\x06')
+        except:
+            return
+
+        for i in range(count):
+            # --- V83 FIX: Check if client wants to interrupt (Wake up) ---
+            try:
+                # Check if socket has data readable (non-blocking peek)
+                ready_to_read, _, _ = select.select([client_sock], [], [], 0)
+                if ready_to_read:
+                    logdbg("Loop interrupted by client activity. Stopping stream.")
+                    break
+            except Exception:
+                break
+            # -------------------------------------------------------------
+
+            try:
+                packed_data = self.create_davis_loop_packet()
+                client_sock.sendall(packed_data)
+                
+                if count > 1:
+                    time.sleep(2.0)
+                    
+            except socket.error as e:
+                logdbg("Send failed during loop stream: %s" % e)
+                break
+            except Exception as e:
+                logdbg("Error in loop stream: %s" % e)
+                break
 
     def handle_dmpaft(self, client_sock):
         client_sock.sendall(b'\x06')
@@ -328,11 +450,11 @@ class WeatherLinkEmulator(StdService):
         
         requested_ts = 0
         try:
-            # Check if Client requests data from the beginning (0)
             if davis_date == 0 and davis_time == 0:
-                # V49 FIX: Catch-up to last 30 DAYS (30 * 24h = 2592000 sec)
-                requested_ts = int(time.time() - 2592000)
-                logdbg("HISTORY REQUEST: Zero TS detected. Forcing catch-up to last 30 days (%s)" % requested_ts)
+                limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
+                requested_ts = int(time.time() - limit_seconds)
+                logdbg("HISTORY REQUEST: Zero TS detected. Emulating HW limit: last %d records (%.1f hours) TS=%s" % 
+                       (HARDWARE_RECORD_LIMIT, limit_seconds / 3600.0, requested_ts))
             else:
                 day = davis_date & 0x1F
                 month = (davis_date >> 5) & 0x0F
@@ -343,9 +465,9 @@ class WeatherLinkEmulator(StdService):
                 requested_ts = time.mktime(dt.timetuple())
                 logdbg("HISTORY REQUEST: Asking for data after: %s (%s)" % (dt, requested_ts))
         except Exception as e:
-            # Fallback if decode fails, default to 30 days
-            requested_ts = int(time.time() - 2592000)
-            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to last 30 days.")
+            limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
+            requested_ts = int(time.time() - limit_seconds)
+            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to HW limit.")
 
         client_sock.sendall(b'\x06')
 
@@ -354,8 +476,6 @@ class WeatherLinkEmulator(StdService):
             with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
                 for record in manager.genBatchRecords(requested_ts + 1):
                     records.append(record)
-                    # V49 FIX: Increase buffer limit for 30 days data
-                    # 1 min interval = ~43200 records in 30 days. Set safe limit to 50000.
                     if len(records) >= 50000: break 
             
             logdbg("DB DEBUG: Found %d records to send." % len(records))

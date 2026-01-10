@@ -1,4 +1,3 @@
-
 # installer derived from the weewx Belchertown skin installer
 # https://raw.githubusercontent.com/poblabs/weewx-belchertown/master/install.py
 # which was Copyright Pat O'Brien, with re-fomatting from a PR by Vince Skahan 
@@ -50,10 +49,16 @@ extension_config = """
     # 2. Client Mapping (VIP Ports)
     # Format: IP_ADDRESS:PORT
     # This maps specific IPs to dedicated ports.
-    # The line below opens port 22223 ONLY for 192.168.1.2 (Your WeeWX client).
-    # All Weewx clients should be mapped here to their own VIP port.
-    # Multiple clients can be mapped by adding additional lines.
-    client_mapping = 192.168.1.2:22223
+    # 
+    # EXAMPLES:
+    # Single client:
+    # client_mapping = 192.168.1.50:22223
+    #
+    # Multiple clients (comma separated):
+    # client_mapping = 192.168.1.50:22223, 192.168.1.51:22224, 192.168.1.100:30000
+    #
+    # Note: It is highly recommended to assign a unique VIP port for each WeeWX instance.
+    # client_mapping = 192.168.X.X:22223
 
     # General settings
     max_clients = 10
