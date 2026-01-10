@@ -60,18 +60,14 @@ WeeWX v4
 
 wee_extension --install https://github.com/iiseppi/wlip-emulator/archive/main.zip
 
+**Method 2: Install manually**
 
-⸻
-
-Method 2: Install manually
 	1.	Download wlip_emulator.py from the repository.
 	2.	Copy it to your WeeWX user directory (commonly one of the following):
 	•	/usr/share/weewx/bin/user/
 	•	/home/weewx/bin/user/
 	3.	Edit weewx.conf and add the configuration options shown below.
 	4.	Add user.wlip_emulator.WeatherLinkEmulator to the user_services list.
-
-⸻
 
 ⚙️ **Configuration**
 
