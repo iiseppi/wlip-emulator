@@ -1,4 +1,4 @@
-**WeatherLinkIP Emulator for WeeWX (V83)**
+**WeatherLinkIP Emulator for WeeWX**
 
 A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows third‑party weather software (such as WeatherCat, CumulusMX, ~~WeatherLink PC~~, MeteoBridge, Home Assistant, etc.) to connect directly to your WeeWX instance. 
 
@@ -134,6 +134,7 @@ V50: Added shutDown() to prevent "Address already in use" on restarts.
 V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
 V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
 V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
+
 
 ⸻
 
