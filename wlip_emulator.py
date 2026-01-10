@@ -1,7 +1,8 @@
 # WLIP Emulator for WeeWX
-# Version: 83 
+# Version: 83
 #
 # Changes:
+# - V83: Fixed 'client_mapping' parsing crash when multiple clients are defined (list vs string).
 # - V83: Updated DMPAFT logic to emulate real Davis Logger memory limits (Hardware Record Limit).
 # - V83: Added 'select' to handle_loop to detect client interrupts (fixes b'LO' error).
 # - V82: Added logging for connection target port info.
@@ -107,26 +108,31 @@ class WeatherLinkEmulator(StdService):
         self.server_sockets = [] 
         self.active_connections = 0
         
-        # --- PORT MAPPING PARSING ---
-        # Format in config: client_mapping = 192.168.1.10:22223, 192.168.1.11:22224
+        # --- PORT MAPPING PARSING (FIXED) ---
         self.port_mappings = {}
+        raw_mapping = options.get('client_mapping', '')
         
-        mapping_str = options.get('client_mapping', '')
-        if mapping_str:
-            try:
-                for pair in mapping_str.split(','):
-                    pair = pair.strip()
-                    if ':' in pair:
-                        ip, p = pair.split(':')
-                        self.port_mappings[int(p)] = ip.strip()
-                        loginf("Configured VIP mapping: IP %s -> Port %s" % (ip.strip(), p))
-            except Exception as e:
-                logerr("Error parsing client_mapping: %s" % e)
+        # Convert to list if it's a string, or use as list if configobj parsed it as such
+        mapping_list = []
+        if isinstance(raw_mapping, list):
+            mapping_list = raw_mapping
+        elif isinstance(raw_mapping, str) and raw_mapping.strip():
+            mapping_list = raw_mapping.split(',')
+            
+        try:
+            for pair in mapping_list:
+                pair = pair.strip()
+                if ':' in pair:
+                    ip, p = pair.split(':')
+                    self.port_mappings[int(p)] = ip.strip()
+                    loginf("Configured VIP mapping: IP %s -> Port %s" % (ip.strip(), p))
+        except Exception as e:
+            logerr("Error parsing client_mapping: %s" % e)
         
-        # V81 FORCE DEFAULT: Ensure the main port (22222) is ALWAYS open to all (None)
-        # This prevents accidental lockout.
-        self.port_mappings[self.port] = None
-        loginf("Default Port %s is OPEN to all connections." % self.port)
+        # Ensure Default Port is OPEN
+        if self.port not in self.port_mappings:
+             self.port_mappings[self.port] = None
+             loginf("Default Port %s is OPEN to all connections." % self.port)
 
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
@@ -178,14 +184,12 @@ class WeatherLinkEmulator(StdService):
             self.last_update_time = time.time()
 
     def run_server(self):
-        # Iterate through all configured ports and start listeners
         for port, allowed_ip in self.port_mappings.items():
             t = threading.Thread(target=self.listen_on_port, args=(port, allowed_ip))
             t.daemon = True
             t.start()
 
     def listen_on_port(self, port, allowed_ip):
-        # None means allow everyone
         access_msg = "ALL (Default)" if allowed_ip is None else allowed_ip
         loginf("Starting listener on port %d [Allowed: %s]" % (port, access_msg))
         
@@ -204,13 +208,10 @@ class WeatherLinkEmulator(StdService):
                 except OSError:
                     break
                 
-                # --- IP SECURITY CHECK ---
                 if allowed_ip is not None and addr[0] != allowed_ip:
-                    # Optional: Log blocking
-                    # logdbg("Security: Blocked unauthorized IP %s from VIP port %d" % (addr[0], port))
+                    # Silently drop unauthorized connections on VIP ports
                     client_sock.close()
                     continue
-                # -------------------------
                 
                 client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 client_sock.settimeout(None)
@@ -225,7 +226,6 @@ class WeatherLinkEmulator(StdService):
             self.active_connections += 1
             count = self.active_connections
         
-        # Log which local port received this connection
         try:
             local_port = client_sock.getsockname()[1]
         except:
@@ -242,16 +242,13 @@ class WeatherLinkEmulator(StdService):
                 
                 buffer.extend(data)
                 
-                # Process buffer in a loop to handle coalesced packets
                 while len(buffer) > 0:
-                    
-                    # 1. Immediate Wakeup Check (Newline at start)
+                    # Clean up random newlines
                     if buffer[0] == 0x0A or buffer[0] == 0x0D:
                         client_sock.sendall(b'\n\r')
-                        buffer = buffer[1:] # Consume 1 byte
+                        buffer = buffer[1:]
                         continue
                     
-                    # 2. Command Processing (Wait for full line if possible)
                     if b'\n' in buffer:
                         split_idx = buffer.find(b'\n')
                         cmd_bytes = buffer[:split_idx]
@@ -261,7 +258,7 @@ class WeatherLinkEmulator(StdService):
                             self.process_command(client_sock, cmd_str, cmd_bytes)
                         continue
                     
-                    # 3. Special cases for binary/non-newline commands (e.g. WRD)
+                    # Davis Wakeup 'WRD' often comes without newline
                     if b'WRD' in buffer:
                          self.process_command(client_sock, "WRD", buffer)
                          buffer = bytearray() 
@@ -279,7 +276,6 @@ class WeatherLinkEmulator(StdService):
             loginf("Connection closed from %s. Active: %d" % (str(addr), count))
 
     def process_command(self, client_sock, cmd, raw_data):
-        # Handle Mystery Command from some Davis software
         if b'\x12\x4d\x0d' in raw_data: 
             client_sock.sendall(b'\x21') 
             return
@@ -287,7 +283,7 @@ class WeatherLinkEmulator(StdService):
         if 'TEST' in cmd:
             client_sock.sendall(b'\n\rTEST\n\r')
         elif 'WRD' in cmd:
-            client_sock.sendall(b'\x06\x11')
+            client_sock.sendall(b'\x06\x11') # Vantage Pro 2 ID
         elif 'VVPVER' in cmd:
             client_sock.sendall(b'\n\rOK\n\r')
         elif 'GETTIME' in cmd:
@@ -348,6 +344,7 @@ class WeatherLinkEmulator(StdService):
                 addr = int(parts[1], 16)
                 length = int(parts[2], 16)
                 data_chunk = bytearray()
+                
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
@@ -412,16 +409,14 @@ class WeatherLinkEmulator(StdService):
             return
 
         for i in range(count):
-            # --- V83 FIX: Check if client wants to interrupt (Wake up) ---
+            # V83: Interrupt Check
             try:
-                # Check if socket has data readable (non-blocking peek)
                 ready_to_read, _, _ = select.select([client_sock], [], [], 0)
                 if ready_to_read:
                     logdbg("Loop interrupted by client activity. Stopping stream.")
                     break
             except Exception:
                 break
-            # -------------------------------------------------------------
 
             try:
                 packed_data = self.create_davis_loop_packet()
