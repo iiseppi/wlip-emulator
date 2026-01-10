@@ -1,4 +1,4 @@
-**WeatherLinkIP Emulator for WeeWX (V83)**
+**WeatherLinkIP Emulator for WeeWX**
 
 A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows third‑party weather software (such as WeatherCat, CumulusMX, ~~WeatherLink PC~~, MeteoBridge, Home Assistant, etc.) to connect directly to your WeeWX instance. 
 
@@ -60,8 +60,10 @@ WeeWX v4
 
 wee_extension --install https://github.com/iiseppi/wlip-emulator/archive/main.zip
 
-**Method 2: Install manually**
 
+⸻
+
+Method 2: Install manually
 	1.	Download wlip_emulator.py from the repository.
 	2.	Copy it to your WeeWX user directory (commonly one of the following):
 	•	/usr/share/weewx/bin/user/
@@ -91,14 +93,19 @@ The installer automatically adds the required sections to /etc/weewx/weewx.conf.
     # Usually auto-detected from [StdArchive].
     # archive_interval = 1
 
+⸻
+
 Enable the Service
 
 Ensure the emulator is listed under Services in the [Engine] section:
 
+
+
+
 [Engine]
     [[Services]]
-        # ... other services ...
-        user_services = user.wlip_emulator.WeatherLinkEmulator
+	# ... other services ...
+	user_services = user.wlip_emulator.WeatherLinkEmulator
 
 
 ⸻
@@ -115,21 +122,38 @@ For history downloads to work correctly, the WeeWX archive interval must match t
 📜 **Changelog**
 
 V83: Updated DMPAFT logic to emulate real Davis Logger memory limits (Hardware Record Limit).
+
 V83: Added 'select' to handle_loop to detect client interrupts (fixes b'LO' error).
+
 V82: Added logging for connection target port info.
+
 V81: Logic update to ensure Default Port remains open alongside VIP Ports.
+
 V80: Added dynamic IP-to-Port mapping via config file.
+
 V79: Added initial Dual Port support.
+
 V78: Implemented Ring Buffer to fix command dropping (CRITICAL FIX).
+
 V77: Fixed sticky packet handling with byte-by-byte check.
+
 V74: Added active connection logging.
+
 V65: Implemented Smart Identity (IP Filtering) for Legacy PC support.
+
 V63: Added NACK response for Mystery Command (0x12 0x4d).
+
 V57-V58: Implemented aggressive wake-up timing for sluggish consoles.
+
 V50: Added shutDown() to prevent "Address already in use" on restarts.
+
 V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
+
 V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
+
 V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
+
+
 
 ⸻
 
