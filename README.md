@@ -2,6 +2,7 @@
 
 A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows third‑party weather software (such as WeatherCat, CumulusMX, ~~WeatherLink PC~~, MeteoBridge, Home Assistant, etc.) to connect directly to your WeeWX instance. 
 
+A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows you to connect third-party weather software (such as WeatherCat, CumulusMX, WeatherLink PC, MeteoBridge, Home Assistant, etc.) directly to your WeeWX instance.
 The emulator acts as a bridge: it reads weather data from your WeeWX database (regardless of your actual station hardware) and serves it to client software using the proprietary Davis protocol.
 
 ⸻
