@@ -10,9 +10,9 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "0.5"
+VERSION      = "0.6"
 NAME         = 'wlip-emulator'
-DESCRIPTION  = 'wlip emulator'
+DESCRIPTION  = 'WeatherLinkIP Emulator'
 AUTHOR       = "iiseppi"
 AUTHOR_EMAIL = "iiseppi@gmail.com"
 
@@ -35,7 +35,7 @@ class WundergroundLikeInstaller(ExtensionInstaller):
         )
 
 #----------------------------------
-#         config stanza
+#          config stanza
 #----------------------------------
 
 extension_config = """
@@ -43,25 +43,37 @@ extension_config = """
 [WeatherLinkEmulator]
     # 1. Default Port
     # This port (22222) is open to all connections.
-    # Should work with WeatherCat, Weather Display and CumulusMX simultaneusly.
     port = 22222
 
-    # 2. Client Mapping (VIP Ports)
+    # 2. General Settings
+    max_clients = 10
+    
+    # 3. Logging Level
+    # 0 = Basic (Only errors and connection info)
+    # 1 = Stats (Shows Lag time, Temp, Wind) - RECOMMENDED
+    # 2 = Raw (Hex dump of all traffic)
+    debug_detail = 1
+
+    # 4. Soft Start (Startup Delay)
+    # Waiting time in seconds after WeeWX starts before opening the network port.
+    # Allows USB drivers and console connection to stabilize.
+    startup_delay = 15
+
+    # 5. Watchdog (Freeze Protection)
+    # How many seconds can data be stale before action is taken?
+    # 300 = 5 minutes
+    max_lag_threshold = 300
+
+    # What action to take when threshold is exceeded?
+    # 0 = Log Warning only
+    # 1 = Disconnect Client (Forces reconnect)
+    # 2 = Kill WeeWX Process (Forces systemd to restart WeeWX and reset USB)
+    max_lag_action = 2
+
+    # 6. Client Mapping (VIP Ports) - Optional
     # Format: IP_ADDRESS:PORT
-    # This maps specific IPs to dedicated ports.
-    # 
-    # EXAMPLES:
-    # Single client:
-    # client_mapping = 192.168.1.50:22223
-    #
-    # Multiple clients (comma separated):
-    # client_mapping = 192.168.1.50:22223, 192.168.1.51:22224, 192.168.1.100:30000
-    #
-    # Note: It is highly recommended to assign a unique VIP port for each WeeWX instance.
     # client_mapping = 192.168.X.X:22223
 
-    # General settings
-    max_clients = 10
     binding = wx_binding
 """
 config_dict = configobj.ConfigObj(StringIO(extension_config))
