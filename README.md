@@ -1,164 +1,145 @@
-**WeatherLinkIP Emulator for WeeWX**
+# WeatherLinkIP Emulator for WeeWX
 
-A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows third‑party weather software (such as WeatherCat, CumulusMX, ~~WeatherLink PC~~, MeteoBridge, Home Assistant, etc.) to connect directly to your WeeWX instance. 
+A WeeWX extension that emulates a Davis WeatherLinkIP (WLIP) data logger over TCP/IP. This allows third‑party weather software (such as WeatherCat, CumulusMX, MeteoBridge, Home Assistant, etc.) to connect directly to your WeeWX instance.
 
 The emulator acts as a bridge: it reads weather data from your WeeWX database (regardless of your actual station hardware) and serves it to client software using the proprietary Davis protocol.
 
-⸻
+---
 
-**✨ Features (Version 83)**
+## ✨ Key Features (Version 88)
 
-⚡ **Interruptible LOOP (Fixes b'LO' Error)**
+### 🛡️ Robust Watchdog (Self-Healing)
 
-New in V83: The emulator now uses smart socket monitoring (select). It instantly stops streaming live data if a client sends a command (such as a wake‑up signal).
+**New in V87-V88:** The emulator includes a configurable "Dead Man's Switch" to handle hardware freezes (e.g., USB connection drops common with Vantage consoles).
 
-Benefit: Resolves the common “Bad wake‑up response: b’LO’” error found in previous versions, ensuring rock‑solid stability with WeeWX and clients that frequently switch between Live and Command modes.
+* **Detection:** Monitors the lag between the current time and the latest weather packet.
+* **Action:** If data becomes stale (e.g., >5 minutes), it can automatically kill the WeeWX process.
+* **Result:** This forces `systemd` to restart the service, resetting USB ports and drivers without user intervention.
 
-⸻
+### ⏳ Soft Start (Startup Delay)
 
-🚦 **VIP Port Mapping (Multi‑Client Isolation)**
+**New in V85:** Configurable delay before opening network ports.
 
-New in V80–V83: Open multiple listening ports simultaneously.
+* **Benefit:** Gives the host machine time to initialize USB drivers and establish a stable connection to the weather station console before accepting client connections. Prevents race conditions during boot.
 
-Why? Isolate critical production software (for example, a secondary WeeWX instance) on a dedicated VIP lane (e.g., port 22223) while keeping noisy devices (like Home Assistant) on the default port (22222). This prevents one client from blocking another.
+### 📊 Smart Logging
 
-⸻
+**New in V84:** Adjustable logging levels via `weewx.conf`.
 
-💾 **Hardware‑Accurate History (DMPAFT)**
+* **Level 0 (Basic):** Minimal logs, errors only.
+* **Level 1 (Stats):** Shows Lag time, Temperature, and Wind speed for every packet batch. Perfect for diagnostics.
+* **Level 2 (Raw):** Full Hex dump of TCP traffic for deep debugging.
 
-Improved in V83: The emulator mimics the physical memory limits of a real Davis data logger (≈ 2560 records).
+### ⚡ Interruptible LOOP (Fixes b'LO' Error)
 
-Safety behavior:
-	•	If a client requests all history since timestamp 0, the emulator calculates the correct start time based on the archive interval.
-	•	Only the most recent full buffer of data is returned.
+**V83:** Uses smart socket monitoring (`select`) to instantly stop streaming live data if a client sends a command. Resolves the "Bad wake‑up response: b’LO’" error, ensuring stability with clients that frequently switch between Live and Command modes.
 
-This prevents massive database dumps that could hang or destabilize connections.
+### 🚦 VIP Port Mapping (Multi‑Client Isolation)
 
-⸻
+**V80–V83:** Open multiple listening ports simultaneously. Isolate critical production software on a dedicated VIP lane (e.g., port 22223) while keeping noisy devices (like Home Assistant) on the default port (22222).
 
-🚀 **TCP Ring Buffer**
+### 💾 Hardware‑Accurate History (DMPAFT)
 
-New in V78: Completely rewritten TCP reception logic using a ring buffer.
+**V83:** Mimics physical memory limits (≈ 2560 records) and prevents 0x2D EEPROM errors by clamping archive intervals to 255 minutes. Prevents massive database dumps that could hang connections.
 
-Result: Commands are never dropped, even if they arrive fragmented or if multiple commands arrive in a single network packet.
+---
 
-⸻
-
-📦 **Installation**
-
-This extension follows the standard WeeWX extension installer format. It automatically copies files and updates weewx.conf.
+## 📦 Installation
 
 **Method 1: Install directly from GitHub (Recommended)**
 
 Run the following command on your WeeWX server.
 
-WeeWX v5 and newer
+**WeeWX v5 and newer:**
 
+```bash
 weectl extension install https://github.com/iiseppi/wlip-emulator/archive/main.zip
 
-WeeWX v4
+```
 
+**WeeWX v4:**
+
+```bash
 wee_extension --install https://github.com/iiseppi/wlip-emulator/archive/main.zip
 
+```
 
-⸻
+**Method 2: Install manually**
 
-Method 2: Install manually
-	1.	Download wlip_emulator.py from the repository.
-	2.	Copy it to your WeeWX user directory (commonly one of the following):
-	•	/usr/share/weewx/bin/user/
-	•	/home/weewx/bin/user/
-	3.	Edit weewx.conf and add the configuration options shown below.
-	4.	Add user.wlip_emulator.WeatherLinkEmulator to the user_services list.
+1. Download `wlip_emulator.py` from the repository.
+2. Copy it to your WeeWX user directory (e.g., `/usr/share/weewx/bin/user/`).
+3. Add `user.wlip_emulator.WeatherLinkEmulator` to the `user_services` list in `weewx.conf`.
+4. Add the configuration block below.
 
-⚙️ **Configuration**
+---
 
-The installer automatically adds the required sections to /etc/weewx/weewx.conf. You may verify or customize them as needed.
+## ⚙️ Configuration
 
+The installer automatically adds the required sections to `/etc/weewx/weewx.conf`.
+
+```ini
 [WeatherLinkEmulator]
     # 1. Default Port (Standard Davis port is 22222)
-    # Open to all connections not listed in client_mapping.
     port = 22222
     
-    # 2. VIP Port Mapping (Optional but Recommended)
-    # Assign specific IPs to dedicated ports to prevent conflicts.
-    # Format: IP_ADDRESS:PORT, IP_ADDRESS:PORT
-    # Example: Map local WeeWX to 22223, another client to 22224
-    client_mapping = 192.168.1.50:22223, 192.168.1.51:22224
+    # 2. Logging Level
+    # 0 = Basic (Errors only)
+    # 1 = Stats (Shows Lag/Temp/Wind) - RECOMMENDED
+    # 2 = Raw (Hex dump)
+    debug_detail = 1
 
-    # General settings
+    # 3. Soft Start
+    # Seconds to wait before opening ports. Allows USB drivers to settle.
+    startup_delay = 15
+
+    # 4. Watchdog (Freeze Protection)
+    # Threshold: How many seconds can data be stale before action is taken?
+    # 300 = 5 minutes
+    max_lag_threshold = 300
+
+    # Action: What to do when threshold is exceeded?
+    # 0 = Log Warning only
+    # 1 = Disconnect Client
+    # 2 = Kill WeeWX Process (Forces systemd restart & USB reset) - RECOMMENDED
+    max_lag_action = 2
+
+    # 5. VIP Port Mapping (Optional)
+    # Assign specific IPs to dedicated ports.
+    # client_mapping = 192.168.1.50:22223
+
     max_clients = 10
-    
-    # (Optional) Force a specific archive interval in minutes.
-    # Usually auto-detected from [StdArchive].
-    # archive_interval = 1
+    binding = wx_binding
 
-⸻
+```
 
-Enable the Service
+---
 
-Ensure the emulator is listed under Services in the [Engine] section:
+## 📜 Changelog
 
+**V88:** Fixed "Unable to read EEPROM at address 0x2D" error by clamping archive interval to hardware limits (max 255 mins).
 
+**V87:** Added `max_lag_action` (Watchdog Kill Switch). Can kill WeeWX process to force systemd restart on freeze.
 
+**V86:** Added `max_lag_disconnect`. Forces client disconnect if WeeWX data is stale.
 
-[Engine]
-    [[Services]]
-	# ... other services ...
-	user_services = user.wlip_emulator.WeatherLinkEmulator
+**V85:** Added `startup_delay` (Soft Start) to allow USB drivers to settle.
 
+**V84:** Implemented Smart Logging (`debug_detail` levels).
 
-⸻
+**V83:** Updated DMPAFT logic to emulate real Davis Logger memory limits; Added `select` to handle_loop to detect client interrupts.
 
-⚠️ **Important Note on Archive Intervals**
+**V82:** Added logging for connection target port info.
 
-For history downloads to work correctly, the WeeWX archive interval must match the client’s expectations.
-	•	WeeWX setting: In [StdArchive], the interval is defined in seconds (e.g., 60 or 300).
-	•	Emulator behavior: Automatically reads this value and converts it to minutes (e.g., 1 or 5) for the Davis protocol.
-	•	Client setting: Ensure your client software (WeatherCat, CumulusMX, etc.) is configured for the same interval.
+**V81:** Logic update to ensure Default Port remains open alongside VIP Ports.
 
-⸻
+**V80:** Added dynamic IP-to-Port mapping via config file.
 
-📜 **Changelog**
+**V78:** Implemented Ring Buffer to fix command dropping (CRITICAL FIX).
 
-V83: Updated DMPAFT logic to emulate real Davis Logger memory limits (Hardware Record Limit).
+**V50:** Added stale data check (>120s) and HISTORY catch-up logic improvements.
 
-V83: Added 'select' to handle_loop to detect client interrupts (fixes b'LO' error).
+---
 
-V82: Added logging for connection target port info.
+## 📄 License
 
-V81: Logic update to ensure Default Port remains open alongside VIP Ports.
-
-V80: Added dynamic IP-to-Port mapping via config file.
-
-V79: Added initial Dual Port support.
-
-V78: Implemented Ring Buffer to fix command dropping (CRITICAL FIX).
-
-V77: Fixed sticky packet handling with byte-by-byte check.
-
-V74: Added active connection logging.
-
-V65: Implemented Smart Identity (IP Filtering) for Legacy PC support.
-
-V63: Added NACK response for Mystery Command (0x12 0x4d).
-
-V57-V58: Implemented aggressive wake-up timing for sluggish consoles.
-
-V50: Added shutDown() to prevent "Address already in use" on restarts.
-
-V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
-
-V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
-
-V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
-
-
-
-⸻
-
-📄 License
-
-This project is open source, licensed under the GNU General Public License v3.0 (GPLv3).
-
-Based on contributions from the WeeWX community.
+This project is open source, licensed under the GNU General Public License v3.0 (GPLv3). Based on contributions from the WeeWX community.
