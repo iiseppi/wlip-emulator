@@ -1,15 +1,29 @@
 # WLIP Emulator for WeeWX
-# Version: 89 (Protocol-Compliant Edition)
+# Version: 88 (Robust Watchdog Edition)
 #
-# Changes in V89:
-# - Fixed LOOP packet structure to match Davis protocol exactly (all 99 bytes)
-# - Added missing fields: Extra Temps, Soil, Leaf, Alarms, Battery status
-# - Fixed bar trend validation to use only valid Davis values
-# - Corrected archive record packing for Rev B format
-# - Added RXTEST, BARDATA, SETTIME, CLRLOG, NEWSETUP commands
-# - Added LOOP2 packet support
-# - Improved error handling throughout
-# - Made WRD response configurable (VP2/Vue)
+# Changes:
+# - V88: Fixed EEPROM 0x2D error by clamping archive interval to 255 mins.
+# - V87: Added 'max_lag_action' (Watchdog Kill Switch). Can kill WeeWX process to force systemd restart.
+# - V86: Added 'max_lag_disconnect'. Forces client disconnect if WeeWX data is stale.
+# - V85: Added 'startup_delay' (Soft Start) to allow USB drivers to settle.
+# - V84: Implemented Smart Logging (debug_detail levels: 0=Basic, 1=Stats, 2=Raw).
+# - V83: Fixed 'client_mapping' parsing crash when multiple clients are defined (list vs string).
+# - V83: Updated DMPAFT logic to emulate real Davis Logger memory limits (Hardware Record Limit).
+# - V83: Added 'select' to handle_loop to detect client interrupts (fixes b'LO' error).
+# - V82: Added logging for connection target port info.
+# - V81: Logic update to ensure Default Port remains open alongside VIP Ports.
+# - V80: Added dynamic IP-to-Port mapping via config file.
+# - V79: Added initial Dual Port support.
+# - V78: Implemented Ring Buffer to fix command dropping (CRITICAL FIX).
+# - V77: Fixed sticky packet handling with byte-by-byte check.
+# - V74: Added active connection logging.
+# - V65: Implemented Smart Identity (IP Filtering) for Legacy PC support.
+# - V63: Added NACK response for Mystery Command (0x12 0x4d).
+# - V57-V58: Implemented aggressive wake-up timing for sluggish consoles.
+# - V50: Added shutDown() to prevent "Address already in use" on restarts.
+# - V50: Added stale data check (>120s). Stops sending LOOP data if WeeWX/Station is down.
+# - V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
+# - V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
 
 import socket
 import threading
@@ -98,10 +112,15 @@ class WeatherLinkEmulator(StdService):
         self.port = int(options.get('port', 22222))
         self.max_clients = int(options.get('max_clients', 10))
         
+<<<<<<< development
         # Station type: 16=VP2, 17=Vue
         self.station_type = int(options.get('station_type', 16))
         
         # LOGGING & DEBUG (0=Basic, 1=Stats/Lag, 2=Raw Hex)
+=======
+        # LOGGING & DEBUG
+        # 0=Basic, 1=Stats/Lag, 2=Raw Hex
+>>>>>>> main
         self.debug_detail = int(options.get('debug_detail', 0))
 
         # SOFT START
@@ -121,7 +140,10 @@ class WeatherLinkEmulator(StdService):
         self.server_sockets = [] 
         self.active_connections = 0
         
+<<<<<<< development
         # Port mappings for VIP clients
+=======
+>>>>>>> main
         self.port_mappings = {}
         raw_mapping = options.get('client_mapping', '')
         
@@ -145,7 +167,11 @@ class WeatherLinkEmulator(StdService):
              self.port_mappings[self.port] = None
              loginf("Default Port %s is OPEN to all connections." % self.port)
 
+<<<<<<< development
         # Archive interval calculation with V88 fix
+=======
+        # --- FIX FOR 0x2D ERROR (V88) ---
+>>>>>>> main
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
         if 'archive_interval' in std_archive:
@@ -157,22 +183,35 @@ class WeatherLinkEmulator(StdService):
         calc_mins = int(interval_seconds / 60)
         # Clamp to 1-255 to prevent EEPROM overflow
         if calc_mins > 255:
+<<<<<<< development
             loginf("WARNING: Archive interval %d mins exceeds Davis limit. Clamping to 255." % calc_mins)
+=======
+            loginf("WARNING: Archive interval %d mins is too large for Davis byte. Clamping to 255." % calc_mins)
+>>>>>>> main
             self.davis_interval_mins = 255
         elif calc_mins < 1:
             self.davis_interval_mins = 1
         else:
             self.davis_interval_mins = calc_mins
+<<<<<<< development
         
         # EEPROM Configuration
+=======
+        # --------------------------------
+        
+>>>>>>> main
         STATION_LATITUDE = 611
         STATION_LONGITUDE = 224
         STATION_TIME_ZONE = 23
         RAIN_COLLECTOR_TYPE = 0x01
         
+<<<<<<< development
         self.eeprom = bytearray(4096)  # Full 4K EEPROM
         
         # Station location
+=======
+        self.eeprom = bytearray(256)
+>>>>>>> main
         struct.pack_into('<h', self.eeprom, 0x0B, STATION_LATITUDE)
         struct.pack_into('<h', self.eeprom, 0x0D, STATION_LONGITUDE)
         self.eeprom[0x11] = STATION_TIME_ZONE
@@ -190,10 +229,15 @@ class WeatherLinkEmulator(StdService):
         
         self.db_binding = options.get('binding', 'wx_binding')
         
+<<<<<<< development
         loginf("*** WLIP EMULATOR V89 (Protocol-Compliant) ***")
         loginf("Station Type: %s | Archive: %d min | Watchdog: %ds/%d" % 
                ("Vue" if self.station_type == 17 else "VP2", 
                 self.davis_interval_mins, self.max_lag_threshold, self.max_lag_action))
+=======
+        loginf("*** WLIP EMULATOR V88 (Robust Watchdog) ***")
+        loginf("Watchdog: Threshold=%ds | Action=%d | Startup Delay=%ds" % (self.max_lag_threshold, self.max_lag_action, self.startup_delay))
+>>>>>>> main
         
         self.run_server()
         self.bind(weewx.NEW_LOOP_PACKET, self.handle_new_loop)
@@ -220,7 +264,11 @@ class WeatherLinkEmulator(StdService):
                 try:
                     ts = event.packet.get('dateTime')
                     t = event.packet.get('outTemp')
+<<<<<<< development
                     logdbg("INTERNAL UPDATE: WeeWX packet TS=%s Temp=%s" % (ts, t))
+=======
+                    logdbg("INTERNAL UPDATE: WeeWX pushed new packet. TS=%s Temp=%s" % (ts, t))
+>>>>>>> main
                 except:
                     pass
 
@@ -231,7 +279,11 @@ class WeatherLinkEmulator(StdService):
 
     def _server_coordinator(self):
         if self.startup_delay > 0:
+<<<<<<< development
             loginf("Startup delay: Waiting %d seconds..." % self.startup_delay)
+=======
+            loginf("Startup delay active: Waiting %d seconds..." % self.startup_delay)
+>>>>>>> main
             time.sleep(self.startup_delay)
             loginf("Startup delay complete. Opening ports.")
 
@@ -261,7 +313,10 @@ class WeatherLinkEmulator(StdService):
                     break
                 
                 if allowed_ip is not None and addr[0] != allowed_ip:
+<<<<<<< development
                     logdbg("Rejected connection from %s (not %s)" % (addr[0], allowed_ip))
+=======
+>>>>>>> main
                     client_sock.close()
                     continue
                 
@@ -301,10 +356,20 @@ class WeatherLinkEmulator(StdService):
                     else:
                         logdbg("RX [%s]: %s..." % (addr[0], hex_data[:100]))
                 
+                if self.debug_detail >= 2:
+                    hex_data = " ".join("{:02x}".format(c) for c in data)
+                    if len(hex_data) < 100:
+                        logdbg("RX RAW [%s]: %s" % (addr[0], hex_data))
+                    else:
+                        logdbg("RX RAW [%s]: %s ... (truncated)" % (addr[0], hex_data[:100]))
+                
                 buffer.extend(data)
                 
                 while len(buffer) > 0:
+<<<<<<< development
                     # Wake-up sequence
+=======
+>>>>>>> main
                     if buffer[0] == 0x0A or buffer[0] == 0x0D:
                         client_sock.sendall(b'\n\r')
                         buffer = buffer[1:]
@@ -320,7 +385,10 @@ class WeatherLinkEmulator(StdService):
                             self.process_command(client_sock, cmd_str, cmd_bytes)
                         continue
                     
+<<<<<<< development
                     # Binary WRD command
+=======
+>>>>>>> main
                     if b'WRD' in buffer:
                          self.process_command(client_sock, "WRD", buffer)
                          buffer = bytearray() 
@@ -346,6 +414,7 @@ class WeatherLinkEmulator(StdService):
                 client_sock.sendall(b'\x21')
                 return
 
+<<<<<<< development
             # Testing commands
             if 'TEST' in cmd:
                 client_sock.sendall(b'\n\rTEST\n\r')
@@ -434,6 +503,42 @@ class WeatherLinkEmulator(StdService):
                     
         except Exception as e:
             logerr("Command '%s' failed: %s" % (cmd, e))
+=======
+        if 'TEST' in cmd:
+            client_sock.sendall(b'\n\rTEST\n\r')
+        elif 'WRD' in cmd:
+            client_sock.sendall(b'\x06\x11')
+        elif 'VVPVER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\r')
+        elif 'GETTIME' in cmd:
+            self.handle_gettime(client_sock)
+        elif 'NVER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
+        elif 'VER' in cmd:
+            client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
+        elif 'EEBRD' in cmd:
+            self.handle_eebrd(client_sock, cmd)
+        elif 'EERD' in cmd:
+            self.handle_eerd(client_sock, cmd)
+        elif 'DMPAFT' in cmd:
+            self.handle_dmpaft(client_sock)
+        elif 'STR' in cmd:
+            self.handle_str(client_sock)
+        elif 'LOOP' in cmd:
+            pkt_count = 1
+            try:
+                parts = cmd.split()
+                for p in parts:
+                    if p.isdigit():
+                        pkt_count = int(p)
+                        break
+            except:
+                pkt_count = 1
+            if pkt_count == 0: pkt_count = 1 
+            self.handle_loop(client_sock, pkt_count)
+        elif 'LPS' in cmd:
+            pkt_count = 1
+>>>>>>> main
             try:
                 client_sock.sendall(b'\x21')  # NAK
             except:
@@ -580,6 +685,7 @@ class WeatherLinkEmulator(StdService):
         resp = forecast_text.encode('utf-8') + b'\n\r'
         client_sock.sendall(resp)
 
+<<<<<<< development
     def handle_hilows(self, client_sock):
         """Handle HILOWS command (high/low values)"""
         # Return empty HILOWS packet (436 bytes of zeros)
@@ -591,6 +697,10 @@ class WeatherLinkEmulator(StdService):
         """Handle LOOP/LPS commands"""
         
         # Watchdog check
+=======
+    def handle_loop(self, client_sock, count):
+        # V88: SMART LOGGING & WATCHDOG
+>>>>>>> main
         lag_found = False
         lag_val = 0
         
@@ -617,6 +727,7 @@ class WeatherLinkEmulator(StdService):
             
             if self.debug_detail >= 1:
                 logdbg("Sending %d LOOP packets... [%s]" % (count, info_str))
+<<<<<<< development
 
         # Watchdog action
         if self.max_lag_threshold > 0 and lag_found:
@@ -625,19 +736,43 @@ class WeatherLinkEmulator(StdService):
                 
                 if self.max_lag_action == 2:
                     logcrit(msg + " - KILLING WEEWX PROCESS")
+=======
+        else:
+            logdbg("Sending %d LOOP packets..." % count)
+
+        # --- V87: WATCHDOG LOGIC (KILL SWITCH) ---
+        if self.max_lag_threshold > 0 and lag_found:
+            if lag_val > self.max_lag_threshold:
+                msg = "WATCHDOG TRIGGERED: Data lag is %d seconds (Threshold: %d)." % (lag_val, self.max_lag_threshold)
+                
+                if self.max_lag_action == 2:
+                    logcrit(msg + " KILLING WEEWX PROCESS TO FORCE SYSTEMD RESTART.")
+>>>>>>> main
                     try:
                         client_sock.close()
                     except:
                         pass
+<<<<<<< development
                     os._exit(1)
                     
                 elif self.max_lag_action == 1:
                     logerr(msg + " - Disconnecting client")
+=======
+                    # Hard exit (status 1) to force systemd to restart the service immediately
+                    os._exit(1)
+                    
+                elif self.max_lag_action == 1:
+                    logerr(msg + " Disconnecting client.")
+>>>>>>> main
                     try:
                         client_sock.close()
                     except:
                         pass
                     return
+<<<<<<< development
+=======
+        # ------------------------------------------
+>>>>>>> main
 
         try:
             client_sock.sendall(b'\x06')
@@ -645,12 +780,19 @@ class WeatherLinkEmulator(StdService):
             return
 
         for i in range(count):
+<<<<<<< development
             # Check for client interrupt
+=======
+>>>>>>> main
             try:
                 ready_to_read, _, _ = select.select([client_sock], [], [], 0)
                 if ready_to_read:
                     if self.debug_detail >= 1:
+<<<<<<< development
                         logdbg("Loop interrupted by client")
+=======
+                        logdbg("Loop interrupted by client activity. Stopping stream.")
+>>>>>>> main
                     break
             except:
                 break
@@ -705,7 +847,11 @@ class WeatherLinkEmulator(StdService):
                 # Full download - hardware limit
                 limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
                 requested_ts = int(time.time() - limit_seconds)
+<<<<<<< development
                 logdbg("DMPAFT: Full download requested (HW limit)")
+=======
+                logdbg("HISTORY REQUEST: Zero TS detected. Emulating HW limit.")
+>>>>>>> main
             else:
                 day = davis_date & 0x1F
                 month = (davis_date >> 5) & 0x0F
@@ -730,17 +876,28 @@ class WeatherLinkEmulator(StdService):
             with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
                 for record in manager.genBatchRecords(requested_ts + 1):
                     records.append(record)
+<<<<<<< development
                     if len(records) >= 50000: 
                         break
+=======
+                    if len(records) >= 50000: break 
+>>>>>>> main
             
             if self.debug_detail >= 1:
                 if len(records) > 0:
                     first_ts = records[0].get('dateTime')
                     last_ts = records[-1].get('dateTime')
+<<<<<<< development
                     logdbg("Archive query: %d records [%s to %s]" % 
                            (len(records), first_ts, last_ts))
                 else:
                     logdbg("Archive query: 0 records found")
+=======
+                    logdbg("DB QUERY SUCCESS: Found %d records. Range: %s -> %s" % 
+                           (len(records), first_ts, last_ts))
+                else:
+                    logdbg("DB QUERY WARNING: Database returned 0 records.")
+>>>>>>> main
             
         except Exception as e:
             logerr("Archive DB error: %s" % e)
@@ -761,7 +918,10 @@ class WeatherLinkEmulator(StdService):
         except:
             return
 
+<<<<<<< development
         # Send pages
+=======
+>>>>>>> main
         for page_idx in range(num_pages):
             page_buffer = bytearray()
             page_buffer.append(page_idx % 256)
