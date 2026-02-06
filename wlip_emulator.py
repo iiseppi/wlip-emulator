@@ -60,6 +60,7 @@ def logcrit(msg):
     log.critical("WLIP Emulator: %s" % msg)
 
 HARDWARE_RECORD_LIMIT = 2560
+
 CRC_TABLE = [
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
     0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
@@ -96,6 +97,7 @@ CRC_TABLE = [
 ]
 
 def crc16(data):
+    """Calculate CRC-16 checksum per Davis protocol"""
     crc = 0
     for byte in data:
         crc = (crc << 8) ^ CRC_TABLE[((crc >> 8) ^ byte) & 0xFF]
@@ -106,11 +108,19 @@ class WeatherLinkEmulator(StdService):
     def __init__(self, engine, config_dict):
         super(WeatherLinkEmulator, self).__init__(engine, config_dict)
         options = config_dict.get('WeatherLinkEmulator', {})
+        
         self.port = int(options.get('port', 22222))
         self.max_clients = int(options.get('max_clients', 10))
         
+<<<<<<< development
+        # Station type: 16=VP2, 17=Vue
+        self.station_type = int(options.get('station_type', 16))
+        
+        # LOGGING & DEBUG (0=Basic, 1=Stats/Lag, 2=Raw Hex)
+=======
         # LOGGING & DEBUG
         # 0=Basic, 1=Stats/Lag, 2=Raw Hex
+>>>>>>> main
         self.debug_detail = int(options.get('debug_detail', 0))
 
         # SOFT START
@@ -130,6 +140,10 @@ class WeatherLinkEmulator(StdService):
         self.server_sockets = [] 
         self.active_connections = 0
         
+<<<<<<< development
+        # Port mappings for VIP clients
+=======
+>>>>>>> main
         self.port_mappings = {}
         raw_mapping = options.get('client_mapping', '')
         
@@ -153,7 +167,11 @@ class WeatherLinkEmulator(StdService):
              self.port_mappings[self.port] = None
              loginf("Default Port %s is OPEN to all connections." % self.port)
 
+<<<<<<< development
+        # Archive interval calculation with V88 fix
+=======
         # --- FIX FOR 0x2D ERROR (V88) ---
+>>>>>>> main
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
         if 'archive_interval' in std_archive:
@@ -165,31 +183,61 @@ class WeatherLinkEmulator(StdService):
         calc_mins = int(interval_seconds / 60)
         # Clamp to 1-255 to prevent EEPROM overflow
         if calc_mins > 255:
+<<<<<<< development
+            loginf("WARNING: Archive interval %d mins exceeds Davis limit. Clamping to 255." % calc_mins)
+=======
             loginf("WARNING: Archive interval %d mins is too large for Davis byte. Clamping to 255." % calc_mins)
+>>>>>>> main
             self.davis_interval_mins = 255
         elif calc_mins < 1:
             self.davis_interval_mins = 1
         else:
             self.davis_interval_mins = calc_mins
+<<<<<<< development
+        
+        # EEPROM Configuration
+=======
         # --------------------------------
         
+>>>>>>> main
         STATION_LATITUDE = 611
         STATION_LONGITUDE = 224
         STATION_TIME_ZONE = 23
         RAIN_COLLECTOR_TYPE = 0x01
         
+<<<<<<< development
+        self.eeprom = bytearray(4096)  # Full 4K EEPROM
+        
+        # Station location
+=======
         self.eeprom = bytearray(256)
+>>>>>>> main
         struct.pack_into('<h', self.eeprom, 0x0B, STATION_LATITUDE)
         struct.pack_into('<h', self.eeprom, 0x0D, STATION_LONGITUDE)
-        self.eeprom[0x12] = STATION_TIME_ZONE
+        self.eeprom[0x11] = STATION_TIME_ZONE
+        self.eeprom[0x12] = 0x00  # Auto DST
+        
+        # Setup bits
         self.eeprom[0x2B] = 0x10 | RAIN_COLLECTOR_TYPE
+        
+        # Archive interval
         self.eeprom[0x2D] = self.davis_interval_mins
-        self.eeprom[0x2E] = 1
+        
+        # Unit bits (F, inHg, mph, etc)
+        self.eeprom[0x29] = 0x00
+        self.eeprom[0x2A] = 0xFF
         
         self.db_binding = options.get('binding', 'wx_binding')
         
+<<<<<<< development
+        loginf("*** WLIP EMULATOR V89 (Protocol-Compliant) ***")
+        loginf("Station Type: %s | Archive: %d min | Watchdog: %ds/%d" % 
+               ("Vue" if self.station_type == 17 else "VP2", 
+                self.davis_interval_mins, self.max_lag_threshold, self.max_lag_action))
+=======
         loginf("*** WLIP EMULATOR V88 (Robust Watchdog) ***")
         loginf("Watchdog: Threshold=%ds | Action=%d | Startup Delay=%ds" % (self.max_lag_threshold, self.max_lag_action, self.startup_delay))
+>>>>>>> main
         
         self.run_server()
         self.bind(weewx.NEW_LOOP_PACKET, self.handle_new_loop)
@@ -216,7 +264,11 @@ class WeatherLinkEmulator(StdService):
                 try:
                     ts = event.packet.get('dateTime')
                     t = event.packet.get('outTemp')
+<<<<<<< development
+                    logdbg("INTERNAL UPDATE: WeeWX packet TS=%s Temp=%s" % (ts, t))
+=======
                     logdbg("INTERNAL UPDATE: WeeWX pushed new packet. TS=%s Temp=%s" % (ts, t))
+>>>>>>> main
                 except:
                     pass
 
@@ -227,7 +279,11 @@ class WeatherLinkEmulator(StdService):
 
     def _server_coordinator(self):
         if self.startup_delay > 0:
+<<<<<<< development
+            loginf("Startup delay: Waiting %d seconds..." % self.startup_delay)
+=======
             loginf("Startup delay active: Waiting %d seconds..." % self.startup_delay)
+>>>>>>> main
             time.sleep(self.startup_delay)
             loginf("Startup delay complete. Opening ports.")
 
@@ -237,8 +293,8 @@ class WeatherLinkEmulator(StdService):
             t.start()
 
     def listen_on_port(self, port, allowed_ip):
-        access_msg = "ALL (Default)" if allowed_ip is None else allowed_ip
-        loginf("Starting listener on port %d [Allowed: %s]" % (port, access_msg))
+        access_msg = "ALL" if allowed_ip is None else allowed_ip
+        loginf("Listening on port %d [Allowed: %s]" % (port, access_msg))
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(None)
@@ -257,6 +313,10 @@ class WeatherLinkEmulator(StdService):
                     break
                 
                 if allowed_ip is not None and addr[0] != allowed_ip:
+<<<<<<< development
+                    logdbg("Rejected connection from %s (not %s)" % (addr[0], allowed_ip))
+=======
+>>>>>>> main
                     client_sock.close()
                     continue
                 
@@ -278,14 +338,23 @@ class WeatherLinkEmulator(StdService):
         except:
             local_port = "Unknown"
             
-        loginf("Incoming connection from %s to PORT %s. Active: %d" % (str(addr), str(local_port), count))
+        loginf("Connection from %s:%s -> Port %s. Active: %d" % 
+               (addr[0], addr[1], local_port, count))
 
         buffer = bytearray()
 
         try:
             while True:
                 data = client_sock.recv(1024)
-                if not data: break
+                if not data: 
+                    break
+                
+                if self.debug_detail >= 2:
+                    hex_data = " ".join("{:02x}".format(c) for c in data)
+                    if len(hex_data) < 100:
+                        logdbg("RX [%s]: %s" % (addr[0], hex_data))
+                    else:
+                        logdbg("RX [%s]: %s..." % (addr[0], hex_data[:100]))
                 
                 if self.debug_detail >= 2:
                     hex_data = " ".join("{:02x}".format(c) for c in data)
@@ -297,11 +366,16 @@ class WeatherLinkEmulator(StdService):
                 buffer.extend(data)
                 
                 while len(buffer) > 0:
+<<<<<<< development
+                    # Wake-up sequence
+=======
+>>>>>>> main
                     if buffer[0] == 0x0A or buffer[0] == 0x0D:
                         client_sock.sendall(b'\n\r')
                         buffer = buffer[1:]
                         continue
                     
+                    # Command with line feed
                     if b'\n' in buffer:
                         split_idx = buffer.find(b'\n')
                         cmd_bytes = buffer[:split_idx]
@@ -311,6 +385,10 @@ class WeatherLinkEmulator(StdService):
                             self.process_command(client_sock, cmd_str, cmd_bytes)
                         continue
                     
+<<<<<<< development
+                    # Binary WRD command
+=======
+>>>>>>> main
                     if b'WRD' in buffer:
                          self.process_command(client_sock, "WRD", buffer)
                          buffer = bytearray() 
@@ -319,19 +397,113 @@ class WeatherLinkEmulator(StdService):
                     break
 
         except Exception as e:
-            logdbg("Client connection closed/error: %s" % e)
+            if self.debug_detail >= 1:
+                logdbg("Client disconnected: %s" % e)
         finally:
             client_sock.close()
             with self.lock:
                 self.active_connections -= 1
                 count = self.active_connections
-            loginf("Connection closed from %s. Active: %d" % (str(addr), count))
+            loginf("Disconnected %s. Active: %d" % (addr[0], count))
 
     def process_command(self, client_sock, cmd, raw_data):
-        if b'\x12\x4d\x0d' in raw_data: 
-            client_sock.sendall(b'\x21') 
-            return
+        """Process incoming Davis commands"""
+        try:
+            # Mystery command (returns NAK per protocol)
+            if b'\x12\x4d' in raw_data: 
+                client_sock.sendall(b'\x21')
+                return
 
+<<<<<<< development
+            # Testing commands
+            if 'TEST' in cmd:
+                client_sock.sendall(b'\n\rTEST\n\r')
+                
+            elif 'WRD' in cmd:
+                # Station type: 16=VP2, 17=Vue
+                client_sock.sendall(b'\x06' + bytes([self.station_type]))
+                
+            elif 'RXTEST' in cmd:
+                client_sock.sendall(b'\n\rOK\n\r')
+                
+            elif 'VER' in cmd:
+                client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
+                
+            elif 'NVER' in cmd:
+                client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
+                
+            elif 'RECEIVERS' in cmd:
+                # Bit 0 = ID 1 (ISS)
+                client_sock.sendall(b'\n\rOK\n\r\x01')
+                
+            # Time commands
+            elif 'GETTIME' in cmd:
+                self.handle_gettime(client_sock)
+                
+            elif 'SETTIME' in cmd:
+                self.handle_settime(client_sock)
+                
+            # EEPROM commands
+            elif 'EEBRD' in cmd:
+                self.handle_eebrd(client_sock, cmd)
+                
+            elif 'EERD' in cmd:
+                self.handle_eerd(client_sock, cmd)
+                
+            elif 'EEWR' in cmd:
+                self.handle_eewr(client_sock, cmd)
+                
+            # Download commands
+            elif 'DMPAFT' in cmd:
+                self.handle_dmpaft(client_sock)
+                
+            elif 'DMP' in cmd:
+                self.handle_dmp(client_sock)
+                
+            # Current data commands
+            elif 'LOOP' in cmd:
+                pkt_count = self._parse_count(cmd, 1)
+                self.handle_loop(client_sock, pkt_count, loop_type=1)
+                
+            elif 'LPS' in cmd:
+                pkt_count = self._parse_count(cmd, 1)
+                # LPS supports LOOP (bit 0) and LOOP2 (bit 1)
+                # For now, send LOOP packets
+                self.handle_loop(client_sock, pkt_count, loop_type=1)
+                
+            elif 'HILOWS' in cmd:
+                self.handle_hilows(client_sock)
+                
+            # Barometer commands
+            elif 'BARDATA' in cmd:
+                self.handle_bardata(client_sock)
+                
+            elif 'BARREAD' in cmd:
+                payload = b'\x00\x00'
+                crc = crc16(payload)
+                client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+                
+            # Diagnostics
+            elif 'RXCHECK' in cmd:
+                client_sock.sendall(b'\n\rOK\n\r12000 5 0 2500 10\n\r')
+                
+            elif 'STR' in cmd:
+                self.handle_str(client_sock)
+                
+            # Clearing commands
+            elif 'CLRLOG' in cmd:
+                client_sock.sendall(b'\x06')
+                
+            elif 'NEWSETUP' in cmd:
+                client_sock.sendall(b'\x06')
+                
+            else:
+                if self.debug_detail >= 1:
+                    logdbg("Unknown command: %s" % cmd)
+                    
+        except Exception as e:
+            logerr("Command '%s' failed: %s" % (cmd, e))
+=======
         if 'TEST' in cmd:
             client_sock.sendall(b'\n\rTEST\n\r')
         elif 'WRD' in cmd:
@@ -366,30 +538,61 @@ class WeatherLinkEmulator(StdService):
             self.handle_loop(client_sock, pkt_count)
         elif 'LPS' in cmd:
             pkt_count = 1
+>>>>>>> main
             try:
-                parts = cmd.split()
-                for p in parts:
-                    if p.isdigit():
-                        pkt_count = int(p)
-                        break
+                client_sock.sendall(b'\x21')  # NAK
             except:
-                pkt_count = 1
-            if pkt_count == 0: pkt_count = 1
-            self.handle_loop(client_sock, pkt_count)
-        elif 'BARREAD' in cmd:
-            payload = b'\x00\x00' 
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-        elif 'HILOWS' in cmd:
-            payload = b'\x00' * 436
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-        elif 'RXCHECK' in cmd:
-            payload = b'\x00\x00\x00\x00\x00'
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+                pass
 
-    def handle_eebrd(self, sock, cmd):
+    def _parse_count(self, cmd, default=1):
+        """Extract packet count from command"""
+        try:
+            parts = cmd.split()
+            for p in parts:
+                if p.isdigit():
+                    count = int(p)
+                    return count if count > 0 else default
+        except:
+            pass
+        return default
+
+    def handle_settime(self, client_sock):
+        """Handle SETTIME command"""
+        client_sock.sendall(b'\x06')
+        try:
+            data = client_sock.recv(8)  # 6 bytes + 2 CRC
+            if len(data) == 8:
+                # Verify CRC
+                calc_crc = crc16(data[0:6])
+                recv_crc = struct.unpack('>H', data[6:8])[0]
+                if calc_crc == recv_crc:
+                    client_sock.sendall(b'\x06')
+                    logdbg("SETTIME: Time updated")
+                else:
+                    client_sock.sendall(b'\x18')  # CANCEL
+        except:
+            pass
+
+    def handle_eewr(self, client_sock, cmd):
+        """Handle EEWR command (write single EEPROM byte)"""
+        try:
+            parts = cmd.split()
+            if len(parts) >= 3:
+                addr = int(parts[1], 16)
+                value = int(parts[2], 16)
+                if addr < len(self.eeprom):
+                    self.eeprom[addr] = value
+                    client_sock.sendall(b'\n\rOK\n\r')
+                    if self.debug_detail >= 1:
+                        logdbg("EEWR: Set addr 0x%02X = 0x%02X" % (addr, value))
+                else:
+                    client_sock.sendall(b'\x21')
+        except Exception as e:
+            logdbg("EEWR Error: %s" % e)
+            client_sock.sendall(b'\x21')
+
+    def handle_eebrd(self, client_sock, cmd):
+        """Handle EEBRD command (binary EEPROM read)"""
         try:
             parts = cmd.split()
             if len(parts) >= 3:
@@ -403,31 +606,35 @@ class WeatherLinkEmulator(StdService):
                     if curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
                     data_chunk.append(val)
+                    
                 crc = crc16(data_chunk)
                 packet = data_chunk + struct.pack('>H', crc)
-                sock.sendall(b'\x06' + packet)
+                client_sock.sendall(b'\x06' + packet)
         except Exception as e:
             logdbg("EEBRD Error: %s" % e)
 
-    def handle_eerd(self, sock, cmd):
+    def handle_eerd(self, client_sock, cmd):
+        """Handle EERD command (hex string EEPROM read)"""
         try:
             parts = cmd.split()
             if len(parts) >= 3:
                 addr = int(parts[1], 16)
                 length = int(parts[2], 16)
-                hex_str = ""
+                
+                client_sock.sendall(b'\n\rOK\n\r')
+                
                 for i in range(length):
                     curr_addr = addr + i
                     val = 0
                     if curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
-                    hex_str += "%02X" % val
-                resp = hex_str.encode('utf-8') + b'\n\r' 
-                sock.sendall(b'\x06' + resp)
+                    hex_str = "%02X\n\r" % val
+                    client_sock.sendall(hex_str.encode('utf-8'))
         except Exception as e:
             logdbg("EERD Error: %s" % e)
 
     def handle_gettime(self, client_sock):
+        """Handle GETTIME command"""
         now = datetime.datetime.now()
         payload = bytearray(6)
         payload[0] = now.second
@@ -438,10 +645,35 @@ class WeatherLinkEmulator(StdService):
         payload[5] = now.year - 1900
         crc = crc16(payload)
         packet = payload + struct.pack('>H', crc)
-        logdbg("GETTIME requested. Sending: %s" % now)
         client_sock.sendall(b'\x06' + packet)
 
+    def handle_bardata(self, client_sock):
+        """Handle BARDATA command"""
+        with self.lock:
+            p = self.current_loop_packet
+        
+        baro = 29920  # Default
+        if p:
+            baro_val = p.get('barometer')
+            if baro_val:
+                baro = int(baro_val * 1000)
+        
+        response = (
+            b'\n\rOK\n\r'
+            b'BAR %d\n\r' % baro +
+            b'ELEVATION 0\n\r'
+            b'DEW POINT 50\n\r'
+            b'VIRTUAL TEMP 60\n\r'
+            b'C 12\n\r'
+            b'R 1000\n\r'
+            b'BARCAL 0\n\r'
+            b'GAIN 0\n\r'
+            b'OFFSET 0\n\r'
+        )
+        client_sock.sendall(response)
+
     def handle_str(self, client_sock):
+        """Handle STR command (forecast string)"""
         forecast_text = "Forecast not available"
         with self.lock:
             if self.current_loop_packet:
@@ -453,8 +685,22 @@ class WeatherLinkEmulator(StdService):
         resp = forecast_text.encode('utf-8') + b'\n\r'
         client_sock.sendall(resp)
 
+<<<<<<< development
+    def handle_hilows(self, client_sock):
+        """Handle HILOWS command (high/low values)"""
+        # Return empty HILOWS packet (436 bytes of zeros)
+        payload = b'\x00' * 436
+        crc = crc16(payload)
+        client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+
+    def handle_loop(self, client_sock, count, loop_type=1):
+        """Handle LOOP/LPS commands"""
+        
+        # Watchdog check
+=======
     def handle_loop(self, client_sock, count):
         # V88: SMART LOGGING & WATCHDOG
+>>>>>>> main
         lag_found = False
         lag_val = 0
         
@@ -481,6 +727,16 @@ class WeatherLinkEmulator(StdService):
             
             if self.debug_detail >= 1:
                 logdbg("Sending %d LOOP packets... [%s]" % (count, info_str))
+<<<<<<< development
+
+        # Watchdog action
+        if self.max_lag_threshold > 0 and lag_found:
+            if lag_val > self.max_lag_threshold:
+                msg = "WATCHDOG: Data lag %ds > %ds threshold" % (lag_val, self.max_lag_threshold)
+                
+                if self.max_lag_action == 2:
+                    logcrit(msg + " - KILLING WEEWX PROCESS")
+=======
         else:
             logdbg("Sending %d LOOP packets..." % count)
 
@@ -491,21 +747,32 @@ class WeatherLinkEmulator(StdService):
                 
                 if self.max_lag_action == 2:
                     logcrit(msg + " KILLING WEEWX PROCESS TO FORCE SYSTEMD RESTART.")
+>>>>>>> main
                     try:
                         client_sock.close()
                     except:
                         pass
+<<<<<<< development
+                    os._exit(1)
+                    
+                elif self.max_lag_action == 1:
+                    logerr(msg + " - Disconnecting client")
+=======
                     # Hard exit (status 1) to force systemd to restart the service immediately
                     os._exit(1)
                     
                 elif self.max_lag_action == 1:
                     logerr(msg + " Disconnecting client.")
+>>>>>>> main
                     try:
                         client_sock.close()
                     except:
                         pass
                     return
+<<<<<<< development
+=======
         # ------------------------------------------
+>>>>>>> main
 
         try:
             client_sock.sendall(b'\x06')
@@ -513,36 +780,63 @@ class WeatherLinkEmulator(StdService):
             return
 
         for i in range(count):
+<<<<<<< development
+            # Check for client interrupt
+=======
+>>>>>>> main
             try:
                 ready_to_read, _, _ = select.select([client_sock], [], [], 0)
                 if ready_to_read:
                     if self.debug_detail >= 1:
+<<<<<<< development
+                        logdbg("Loop interrupted by client")
+=======
                         logdbg("Loop interrupted by client activity. Stopping stream.")
+>>>>>>> main
                     break
-            except Exception:
+            except:
                 break
 
             try:
-                packed_data = self.create_davis_loop_packet()
+                if loop_type == 2:
+                    packed_data = self.create_davis_loop2_packet()
+                else:
+                    packed_data = self.create_davis_loop_packet()
+                    
                 client_sock.sendall(packed_data)
                 
                 if count > 1:
                     time.sleep(2.0)
                     
             except socket.error as e:
-                logdbg("Send failed during loop stream: %s" % e)
+                logdbg("Send failed in loop: %s" % e)
                 break
             except Exception as e:
-                logdbg("Error in loop stream: %s" % e)
+                logerr("Error in loop: %s" % e)
                 break
 
-    def handle_dmpaft(self, client_sock):
+    def handle_dmp(self, client_sock):
+        """Handle DMP command (download all archive)"""
+        # Force full download by setting timestamp to zero
         client_sock.sendall(b'\x06')
+        
+        # Simulate zero timestamp sent from client
+        limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
+        requested_ts = int(time.time() - limit_seconds)
+        
+        self._download_archive(client_sock, requested_ts)
+
+    def handle_dmpaft(self, client_sock):
+        """Handle DMPAFT command (download after timestamp)"""
+        client_sock.sendall(b'\x06')
+        
         try:
             ts_data = client_sock.recv(6)
         except:
             return
-        if len(ts_data) != 6: return
+            
+        if len(ts_data) != 6: 
+            return
 
         davis_date = struct.unpack('<H', ts_data[0:2])[0]
         davis_time = struct.unpack('<H', ts_data[2:4])[0]
@@ -550,9 +844,14 @@ class WeatherLinkEmulator(StdService):
         requested_ts = 0
         try:
             if davis_date == 0 and davis_time == 0:
+                # Full download - hardware limit
                 limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
                 requested_ts = int(time.time() - limit_seconds)
+<<<<<<< development
+                logdbg("DMPAFT: Full download requested (HW limit)")
+=======
                 logdbg("HISTORY REQUEST: Zero TS detected. Emulating HW limit.")
+>>>>>>> main
             else:
                 day = davis_date & 0x1F
                 month = (davis_date >> 5) & 0x0F
@@ -561,37 +860,53 @@ class WeatherLinkEmulator(StdService):
                 minute = davis_time % 100
                 dt = datetime.datetime(year, month, day, hour, minute)
                 requested_ts = time.mktime(dt.timetuple())
-                logdbg("HISTORY REQUEST: Asking for data after: %s (%s)" % (dt, requested_ts))
+                logdbg("DMPAFT: Requesting after %s" % dt)
         except Exception as e:
             limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
             requested_ts = int(time.time() - limit_seconds)
-            logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to HW limit.")
+            logdbg("DMPAFT: Invalid timestamp, using HW limit")
 
         client_sock.sendall(b'\x06')
+        self._download_archive(client_sock, requested_ts)
 
+    def _download_archive(self, client_sock, requested_ts):
+        """Common archive download logic"""
         records = []
         try:
             with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
                 for record in manager.genBatchRecords(requested_ts + 1):
                     records.append(record)
+<<<<<<< development
+                    if len(records) >= 50000: 
+                        break
+=======
                     if len(records) >= 50000: break 
+>>>>>>> main
             
             if self.debug_detail >= 1:
                 if len(records) > 0:
                     first_ts = records[0].get('dateTime')
                     last_ts = records[-1].get('dateTime')
+<<<<<<< development
+                    logdbg("Archive query: %d records [%s to %s]" % 
+                           (len(records), first_ts, last_ts))
+                else:
+                    logdbg("Archive query: 0 records found")
+=======
                     logdbg("DB QUERY SUCCESS: Found %d records. Range: %s -> %s" % 
                            (len(records), first_ts, last_ts))
                 else:
                     logdbg("DB QUERY WARNING: Database returned 0 records.")
+>>>>>>> main
             
         except Exception as e:
-            logerr("DB ERROR: Failed to query database: %s" % e)
+            logerr("Archive DB error: %s" % e)
             records = []
         
         num_records = len(records)
-        num_pages = math.ceil(num_records / 5.0)
+        num_pages = int(math.ceil(num_records / 5.0))
         
+        # Send header
         header = struct.pack('<H', num_pages) + b'\x00\x00'
         header_crc = crc16(header)
         client_sock.sendall(header + struct.pack('>H', header_crc))
@@ -603,16 +918,22 @@ class WeatherLinkEmulator(StdService):
         except:
             return
 
+<<<<<<< development
+        # Send pages
+=======
+>>>>>>> main
         for page_idx in range(num_pages):
             page_buffer = bytearray()
             page_buffer.append(page_idx % 256)
+            
             for i in range(5):
                 rec_idx = page_idx * 5 + i
                 if rec_idx < num_records:
                     page_buffer.extend(self.pack_archive_record(records[rec_idx]))
                 else:
                     page_buffer.extend(b'\xff' * 52)
-            page_buffer.extend(b'\x00\x00\x00\x00')
+                    
+            page_buffer.extend(b'\x00\x00\x00\x00')  # Unused bytes
             pg_crc = crc16(page_buffer)
             page_buffer.extend(struct.pack('>H', pg_crc))
             
@@ -620,57 +941,112 @@ class WeatherLinkEmulator(StdService):
             
             try:
                 ack = client_sock.recv(1)
-                if ack == b'\x1B': 
+                if ack == b'\x1B':  # ESC
+                    logdbg("Download cancelled by client")
                     break
             except:
                 break
 
     def pack_archive_record(self, record):
+        """Pack archive record in Rev B format (52 bytes)"""
         rec_us = weewx.units.to_std_system(record, weewx.US)
+        
         ts = rec_us['dateTime']
         t = time.localtime(ts)
         davis_date = t.tm_mday + (t.tm_mon * 32) + ((t.tm_year - 2000) * 512)
         davis_time = (t.tm_hour * 100) + t.tm_min
+        
         packet = bytearray(52)
+        
+        # Date and time stamps
         struct.pack_into('<H', packet, 0, davis_date)
         struct.pack_into('<H', packet, 2, davis_time)
+        
         def get(key, scale=1, offset=0, dash=0):
             val = rec_us.get(key)
-            if val is None: return dash
+            if val is None: 
+                return dash
             return int((val * scale) + offset)
+        
+        # Temperatures (offset 4-9)
         struct.pack_into('<h', packet, 4, get('outTemp', 10, 0, 32767))
-        struct.pack_into('<h', packet, 6, get('outTemp', 10, 0, -32768)) 
-        struct.pack_into('<h', packet, 8, get('outTemp', 10, 0, 32767))
+        struct.pack_into('<h', packet, 6, get('outTemp', 10, 0, -32768))  # High
+        struct.pack_into('<h', packet, 8, get('outTemp', 10, 0, 32767))   # Low
+        
+        # Rain (offset 10-13)
         struct.pack_into('<H', packet, 10, get('rain', 100, 0, 0))
         struct.pack_into('<H', packet, 12, get('rainRate', 100, 0, 0))
+        
+        # Barometer (offset 14-15)
         baro = get('barometer', 1000, 0, 0)
-        if baro == 0: baro = 29920
+        if baro == 0: 
+            baro = 29920
         struct.pack_into('<H', packet, 14, baro)
+        
+        # Solar radiation (offset 16-17)
         struct.pack_into('<H', packet, 16, get('radiation', 1, 0, 32767))
-        struct.pack_into('<H', packet, 18, 100) 
+        
+        # Wind samples (offset 18-19)
+        struct.pack_into('<H', packet, 18, 100)
+        
+        # Inside temp/humidity (offset 20-23)
         struct.pack_into('<h', packet, 20, get('inTemp', 10, 0, 32767))
         packet[22] = get('inHumidity', 1, 0, 255)
         packet[23] = get('outHumidity', 1, 0, 255)
+        
+        # Wind (offset 24-27)
         packet[24] = get('windSpeed', 1, 0, 255)
         packet[25] = get('windGust', 1, 0, 0)
+        
+        # Wind direction code
         wind_dir = rec_us.get('windDir')
         if wind_dir is not None:
             dir_code = int((wind_dir / 22.5) + 0.5) % 16
         else:
-            dir_code = 255 
-        packet[26] = dir_code
-        packet[27] = dir_code
+            dir_code = 255
+        packet[26] = dir_code  # High wind dir
+        packet[27] = dir_code  # Prevailing wind dir
+        
+        # UV and ET (offset 28-29)
         packet[28] = get('UV', 10, 0, 255)
         packet[29] = get('ET', 1000, 0, 0)
-        struct.pack_into('<H', packet, 30, get('radiation', 1, 0, 32767))
-        packet[32] = get('UV', 10, 0, 0) 
-        packet[33] = 0 
-        for i in range(34, 42): packet[i] = 0xFF 
-        packet[42] = 0 
-        for i in range(43, 52): packet[i] = 0xFF
+        
+        # Rev B specific fields (offset 30-41)
+        struct.pack_into('<H', packet, 30, get('radiation', 1, 0, 0))  # High solar
+        packet[32] = get('UV', 10, 0, 0)  # High UV
+        packet[33] = get('forecastRule', 1, 0, 193)  # Forecast rule
+        
+        # Leaf temps (offset 34-35)
+        packet[34] = 0xFF
+        packet[35] = 0xFF
+        
+        # Leaf wetness (offset 36-37)
+        packet[36] = 0xFF
+        packet[37] = 0xFF
+        
+        # Soil temps (offset 38-41)
+        for i in range(38, 42):
+            packet[i] = 0xFF
+        
+        # Record type (offset 42) - 0x00 = Rev B
+        packet[42] = 0x00
+        
+        # Extra humidity (offset 43-44)
+        packet[43] = 0xFF
+        packet[44] = 0xFF
+        
+        # Extra temps (offset 45-47)
+        for i in range(45, 48):
+            packet[i] = 0xFF
+        
+        # Soil moisture (offset 48-51)
+        for i in range(48, 52):
+            packet[i] = 0xFF
+        
         return packet
 
     def create_davis_loop_packet(self):
+        """Create LOOP packet (99 bytes) per Davis protocol"""
         with self.lock:
             if self.current_loop_packet:
                 p_raw = self.current_loop_packet.copy()
@@ -697,6 +1073,183 @@ class WeatherLinkEmulator(StdService):
                 pass
             return fallback
 
+        # Extract values
+        outTemp = get_val('outTemp')
+        inTemp = get_val('inTemp')
+        barometer = get_val('barometer')
+        windSpeed = get_val('windSpeed')
+        windDir = get_val('windDir', int, 0)
+        rainRate = get_val('rainRate')
+        outHumidity = get_val('outHumidity')
+        inHumidity = get_val('inHumidity')
+        dayRain = get_val('dayRain')
+        monthRain = get_val('monthRain')
+        yearRain = get_val('yearRain')
+        uv = get_val('UV', float, 0)
+        radiation = get_val('radiation', float, 0)
+        forecast_rule = get_val('forecastRule', int, 0)
+        bar_trend = get_val('barometerTrend', int, 0)
+        sunrise_epoch = get_val('sunrise', int, 0)
+        sunset_epoch = get_val('sunset', int, 0)
+
+        # Convert sunrise/sunset
+        def to_davis_time(epoch):
+            if not epoch: 
+                return 0
+            t = time.localtime(epoch)
+            return t.tm_hour * 100 + t.tm_min
+            
+        sunrise_davis = to_davis_time(sunrise_epoch)
+        sunset_davis = to_davis_time(sunset_epoch)
+
+        # Create packet
+        packet = bytearray(99)
+        
+        # Header (offset 0-3)
+        struct.pack_into('<3s', packet, 0, b'LOO')
+        
+        # Bar trend (offset 3) - validate to Davis values
+        TREND_MAP = {-2: 196, -1: 236, 0: 0, 1: 20, 2: 60}  # Unsigned byte values
+        trend_val = TREND_MAP.get(bar_trend, 0)
+        packet[3] = trend_val
+        
+        # Packet type (offset 4) - 0 = LOOP
+        packet[4] = 0
+        
+        # Next record (offset 5-6)
+        struct.pack_into('<H', packet, 5, 0)
+        
+        # Barometer (offset 7-8)
+        bar_val = int(barometer * 1000) if barometer else 29920
+        struct.pack_into('<H', packet, 7, bar_val)
+        
+        # Inside temp/humidity (offset 9-11)
+        struct.pack_into('<h', packet, 9, int(inTemp * 10) if inTemp else 0)
+        packet[11] = int(inHumidity) if inHumidity else 0
+        
+        # Outside temp (offset 12-13)
+        struct.pack_into('<h', packet, 12, int(outTemp * 10) if outTemp else 0)
+        
+        # Wind speed (offset 14-15)
+        ws_val = int(windSpeed) if windSpeed else 0
+        packet[14] = ws_val
+        packet[15] = ws_val  # 10-min avg
+        
+        # Wind direction (offset 16-17)
+        struct.pack_into('<H', packet, 16, int(windDir))
+        
+        # Extra temps (offset 18-24) - 7 bytes, dashed
+        for i in range(18, 25):
+            packet[i] = 0xFF
+        
+        # Soil temps (offset 25-28) - 4 bytes, dashed
+        for i in range(25, 29):
+            packet[i] = 0xFF
+        
+        # Leaf temps (offset 29-32) - 4 bytes, dashed
+        for i in range(29, 33):
+            packet[i] = 0xFF
+        
+        # Outside humidity (offset 33)
+        packet[33] = int(outHumidity) if outHumidity else 0
+        
+        # Extra humidities (offset 34-40) - 7 bytes, dashed
+        for i in range(34, 41):
+            packet[i] = 0xFF
+        
+        # Rain rate (offset 41-42)
+        struct.pack_into('<H', packet, 41, int(rainRate * 100) if rainRate else 0)
+        
+        # UV (offset 43)
+        uv_val = int(uv * 10) if uv < 25.5 else 255
+        packet[43] = uv_val
+        
+        # Solar radiation (offset 44-45)
+        struct.pack_into('<H', packet, 44, int(radiation))
+        
+        # Storm rain (offset 46-47)
+        struct.pack_into('<H', packet, 46, 0)
+        
+        # Storm start date (offset 48-49)
+        struct.pack_into('<H', packet, 48, 0)
+        
+        # Day/Month/Year rain (offset 50-55)
+        struct.pack_into('<H', packet, 50, int(dayRain * 100) if dayRain else 0)
+        struct.pack_into('<H', packet, 52, int(monthRain * 100) if monthRain else 0)
+        struct.pack_into('<H', packet, 54, int(yearRain * 100) if yearRain else 0)
+        
+        # Day/Month/Year ET (offset 56-61)
+        struct.pack_into('<H', packet, 56, 0)  # Day ET
+        struct.pack_into('<H', packet, 58, 0)  # Month ET
+        struct.pack_into('<H', packet, 60, 0)  # Year ET
+        
+        # Soil moistures (offset 62-65) - 4 bytes, dashed
+        for i in range(62, 66):
+            packet[i] = 0xFF
+        
+        # Leaf wetnesses (offset 66-69) - 4 bytes, dashed
+        for i in range(66, 70):
+            packet[i] = 0xFF
+        
+        # Alarms (offset 70-85) - all off
+        for i in range(70, 86):
+            packet[i] = 0x00
+        
+        # Transmitter battery (offset 86)
+        packet[86] = 0x00
+        
+        # Console battery voltage (offset 87-88)
+        struct.pack_into('<H', packet, 87, 0)
+        
+        # Forecast icon (offset 89)
+        packet[89] = 0x00
+        
+        # Forecast rule (offset 90)
+        packet[90] = forecast_rule
+        
+        # Sunrise/sunset (offset 91-94)
+        struct.pack_into('<H', packet, 91, sunrise_davis)
+        struct.pack_into('<H', packet, 93, sunset_davis)
+        
+        # Line terminators (offset 95-96)
+        packet[95] = 0x0A  # \n
+        packet[96] = 0x0D  # \r
+        
+        # CRC (offset 97-98) - calculated on bytes 0-96
+        crc = crc16(packet[0:97])
+        struct.pack_into('>H', packet, 97, crc)
+        
+        return bytes(packet)
+
+    def create_davis_loop2_packet(self):
+        """Create LOOP2 packet (99 bytes) per Davis protocol"""
+        with self.lock:
+            if self.current_loop_packet:
+                p_raw = self.current_loop_packet.copy()
+            else:
+                p_raw = None
+
+        if not p_raw:
+            p_raw = {'dateTime': int(time.time()), 'usUnits': weewx.US}
+
+        if p_raw.get('usUnits') != weewx.US:
+            try:
+                p = weewx.units.to_std_system(p_raw, weewx.US)
+            except:
+                p = p_raw
+        else:
+            p = p_raw
+
+        def get_val(key, conversion_func=float, fallback=0):
+            try:
+                val = p.get(key)
+                if val is not None:
+                    return conversion_func(val)
+            except:
+                pass
+            return fallback
+
+        # Extract values
         outTemp = get_val('outTemp')
         inTemp = get_val('inTemp')
         barometer = get_val('barometer')
@@ -708,57 +1261,123 @@ class WeatherLinkEmulator(StdService):
         dayRain = get_val('dayRain')
         uv = get_val('UV', float, 0)
         radiation = get_val('radiation', float, 0)
-        monthRain = get_val('monthRain', float, 0)
-        yearRain = get_val('yearRain', float, 0)
-        forecast_rule = get_val('forecastRule', int, 0)
         bar_trend = get_val('barometerTrend', int, 0)
-        sunrise_epoch = get_val('sunrise', int, 0)
-        sunset_epoch = get_val('sunset', int, 0)
-
-        sunrise_davis = 0
-        sunset_davis = 0
-        def to_davis_time(epoch):
-            if not epoch: return 0
-            t = time.localtime(epoch)
-            return t.tm_hour * 100 + t.tm_min
-        if sunrise_epoch: sunrise_davis = to_davis_time(sunrise_epoch)
-        if sunset_epoch: sunset_davis = to_davis_time(sunset_epoch)
+        dewpoint = get_val('dewpoint', float, 0)
+        windchill = get_val('windchill', float, 0)
+        heatindex = get_val('heatindex', float, 0)
 
         packet = bytearray(99)
-        struct.pack_into('<3s', packet, 0, b'LOO')
-        try:
-            struct.pack_into('<b', packet, 3, int(bar_trend))
-        except:
-            packet[3] = 0
         
-        packet[4] = 0 
-            
-        struct.pack_into('<H', packet, 5, 0)
-        bar_val = int(barometer * 1000) if barometer else 0
-        if bar_val == 0: bar_val = 29920 
+        # Header
+        struct.pack_into('<3s', packet, 0, b'LOO')
+        
+        # Bar trend
+        TREND_MAP = {-2: 196, -1: 236, 0: 0, 1: 20, 2: 60}
+        packet[3] = TREND_MAP.get(bar_trend, 0)
+        
+        # Packet type (1 = LOOP2)
+        packet[4] = 1
+        
+        # Unused (offset 5-6)
+        struct.pack_into('<H', packet, 5, 0x7FFF)
+        
+        # Barometer
+        bar_val = int(barometer * 1000) if barometer else 29920
         struct.pack_into('<H', packet, 7, bar_val)
+        
+        # Inside temp/humidity
         struct.pack_into('<h', packet, 9, int(inTemp * 10) if inTemp else 0)
         packet[11] = int(inHumidity) if inHumidity else 0
+        
+        # Outside temp
         struct.pack_into('<h', packet, 12, int(outTemp * 10) if outTemp else 0)
         
-        ws_val = int(windSpeed) if windSpeed else 0
-        packet[14] = ws_val
-        packet[15] = ws_val 
+        # Wind speed
+        packet[14] = int(windSpeed) if windSpeed else 0
         
+        # Unused
+        packet[15] = 0xFF
+        
+        # Wind direction
         struct.pack_into('<H', packet, 16, int(windDir))
-        packet[33] = int(outHumidity) if outHumidity else 0
-        struct.pack_into('<H', packet, 41, int(rainRate * 100) if rainRate else 0)
-        packet[43] = int(uv * 10) if uv < 25.5 else 255 
-        struct.pack_into('<H', packet, 44, int(radiation))
-        struct.pack_into('<H', packet, 50, int(dayRain * 100) if dayRain else 0)
-        struct.pack_into('<H', packet, 52, int(monthRain * 100) if monthRain else 0)
-        struct.pack_into('<H', packet, 54, int(yearRain * 100) if yearRain else 0)
-        struct.pack_into('<H', packet, 88, 800)
-        packet[89] = 0 
-        packet[90] = forecast_rule 
-        struct.pack_into('<H', packet, 91, sunrise_davis)
-        struct.pack_into('<H', packet, 93, sunset_davis)
         
+        # Wind averages (10min, 2min) and gust
+        struct.pack_into('<H', packet, 18, int(windSpeed * 10) if windSpeed else 0)
+        struct.pack_into('<H', packet, 20, int(windSpeed * 10) if windSpeed else 0)
+        struct.pack_into('<H', packet, 22, int(windSpeed * 10) if windSpeed else 0)
+        struct.pack_into('<H', packet, 24, int(windDir))
+        
+        # Unused fields
+        struct.pack_into('<H', packet, 26, 0x7FFF)
+        struct.pack_into('<H', packet, 28, 0x7FFF)
+        
+        # Dewpoint
+        struct.pack_into('<h', packet, 30, int(dewpoint) if dewpoint else 255)
+        
+        # Unused
+        packet[32] = 0xFF
+        
+        # Outside humidity
+        packet[33] = int(outHumidity) if outHumidity else 0
+        
+        # Unused
+        packet[34] = 0xFF
+        
+        # Heat index
+        struct.pack_into('<h', packet, 35, int(heatindex) if heatindex else 255)
+        
+        # Wind chill
+        struct.pack_into('<h', packet, 37, int(windchill) if windchill else 255)
+        
+        # THSW (unused)
+        struct.pack_into('<h', packet, 39, 255)
+        
+        # Rain rate
+        struct.pack_into('<H', packet, 41, int(rainRate * 100) if rainRate else 0)
+        
+        # UV
+        packet[43] = int(uv * 10) if uv < 25.5 else 255
+        
+        # Solar radiation
+        struct.pack_into('<H', packet, 44, int(radiation))
+        
+        # Storm rain and date (unused)
+        struct.pack_into('<H', packet, 46, 0)
+        struct.pack_into('<H', packet, 48, 0)
+        
+        # Day rain
+        struct.pack_into('<H', packet, 50, int(dayRain * 100) if dayRain else 0)
+        
+        # 15min, hour, 24hr rain (unused)
+        struct.pack_into('<H', packet, 52, 0)
+        struct.pack_into('<H', packet, 54, 0)
+        
+        # Day ET
+        struct.pack_into('<H', packet, 56, 0)
+        
+        # 24hr rain
+        struct.pack_into('<H', packet, 58, 0)
+        
+        # Bar reduction method
+        packet[60] = 2  # NOAA
+        
+        # Bar offset and calibration
+        struct.pack_into('<H', packet, 61, 0)
+        struct.pack_into('<H', packet, 63, 0)
+        struct.pack_into('<H', packet, 65, int(barometer * 1000) if barometer else 29920)
+        struct.pack_into('<H', packet, 67, int(barometer * 1000) if barometer else 29920)
+        struct.pack_into('<H', packet, 69, int(barometer * 1000) if barometer else 29920)
+        
+        # Unused fields (71-94)
+        for i in range(71, 95):
+            packet[i] = 0xFF
+        
+        # Line terminators
+        packet[95] = 0x0A
+        packet[96] = 0x0D
+        
+        # CRC
         crc = crc16(packet[0:97])
         struct.pack_into('>H', packet, 97, crc)
+        
         return bytes(packet)
