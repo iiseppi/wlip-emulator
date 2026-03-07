@@ -42,6 +42,9 @@ The emulator acts as a bridge: it reads weather data from your WeeWX database (r
 
 **V83:** Mimics physical memory limits (≈ 2560 records) and prevents 0x2D EEPROM errors by clamping archive intervals to 255 minutes. Prevents massive database dumps that could hang connections.
 
+### 💡 Pro-tip: Extended Historical Recovery
+If a specific start date is explicitly requested by the client software (e.g., by modifying today.ini in CumulusMX), the emulator bypasses the 2560 record hardware limit and allows a massive historical catch-up (up to 50,000 records). Use with caution: Downloading weeks of data at once works perfectly, but may take several minutes to process depending on your client software.
+
 ---
 
 ## 📦 Installation
