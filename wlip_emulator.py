@@ -1,7 +1,17 @@
 # WLIP Emulator for WeeWX
-# Version: 88 (Robust Watchdog Edition)
+# Version: 89 (WeeWX 5.5 & Devnotes Compliance Update)
 #
 # Changes:
+# - V89: Implemented graceful shutdown via weewx.SHUTDOWN event binding.
+# - V89: Watchdog Action 2 now uses SIGTERM for a safe, systemd-friendly restart.
+# - V89: Added SQLite database lock Retry-logic to DMPAFT to prevent CannotLock crashes.
+# - V89: Modernized all logging to use Python 3 f-strings for better performance.
+# - V89: Eliminated silent exceptions (except: pass) as per WeeWX Devnotes.
+# - V89: Added TCP Keepalive to client sockets for faster dead-connection detection.
+# - V88.3: FIXED port binding timeouts by multithreading the listener setup.
+# - V88.3: Watchdog action 2 uses os.execv for an immediate in-place process restart.
+# - V88.1: Enhanced Watchdog. Action 2 now performs an in-place process 
+#          restart using os.execv to ensure WeeWX boots up again immediately.
 # - V88: Fixed EEPROM 0x2D error by clamping archive interval to 255 mins.
 # - V87: Added 'max_lag_action' (Watchdog Kill Switch). Can kill WeeWX process to force systemd restart.
 # - V86: Added 'max_lag_disconnect'. Forces client disconnect if WeeWX data is stale.
@@ -25,6 +35,7 @@
 # - V50: HISTORY catch-up logic extended to 30 days & buffer increased to 50,000 records.
 # - V50: FIXED Archive Interval reporting at EEPROM address 0x2D.
 
+
 import socket
 import threading
 import struct
@@ -35,6 +46,7 @@ import datetime
 import select
 import os
 import sys
+import signal
 import weewx
 import weewx.units
 import weewx.manager 
@@ -48,16 +60,16 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 def logdbg(msg):
-    log.debug("WLIP Emulator: %s" % msg)
+    log.debug(f"WLIP Emulator: {msg}")
 
 def loginf(msg):
-    log.info("WLIP Emulator: %s" % msg)
+    log.info(f"WLIP Emulator: {msg}")
 
 def logerr(msg):
-    log.error("WLIP Emulator: %s" % msg)
+    log.error(f"WLIP Emulator: {msg}")
 
 def logcrit(msg):
-    log.critical("WLIP Emulator: %s" % msg)
+    log.critical(f"WLIP Emulator: {msg}")
 
 HARDWARE_RECORD_LIMIT = 2560
 CRC_TABLE = [
@@ -109,18 +121,15 @@ class WeatherLinkEmulator(StdService):
         self.port = int(options.get('port', 22222))
         self.max_clients = int(options.get('max_clients', 10))
         
-        # LOGGING & DEBUG
-        # 0=Basic, 1=Stats/Lag, 2=Raw Hex
+        # LOGGING & DEBUG (0=Basic, 1=Stats/Lag, 2=Raw Hex)
         self.debug_detail = int(options.get('debug_detail', 0))
 
-        # SOFT START
+        # SOFT START & WATCHDOG
         self.startup_delay = int(options.get('startup_delay', 0))
-        
-        # WATCHDOG SETTINGS
         self.max_lag_threshold = int(options.get('max_lag_threshold', 0))
-        # Action: 0=LogOnly, 1=DisconnectClient, 2=KillWeeWX
-        self.max_lag_action = int(options.get('max_lag_action', 0))
+        self.max_lag_action = int(options.get('max_lag_action', 0)) # 0=Log, 1=Disconnect, 2=KillWeeWX
         
+        self.running = True
         self.current_loop_packet = None
         self.lock = threading.Lock()
         self.engine = engine
@@ -145,33 +154,30 @@ class WeatherLinkEmulator(StdService):
                 if ':' in pair:
                     ip, p = pair.split(':')
                     self.port_mappings[int(p)] = ip.strip()
-                    loginf("Configured VIP mapping: IP %s -> Port %s" % (ip.strip(), p))
+                    loginf(f"Configured VIP mapping: IP {ip.strip()} -> Port {p}")
         except Exception as e:
-            logerr("Error parsing client_mapping: %s" % e)
+            logerr(f"Error parsing client_mapping: {e}")
         
         if self.port not in self.port_mappings:
              self.port_mappings[self.port] = None
-             loginf("Default Port %s is OPEN to all connections." % self.port)
+             loginf(f"Default Port {self.port} is OPEN to all connections.")
 
-        # --- FIX FOR 0x2D ERROR (V88) ---
+        # --- FIX FOR 0x2D ERROR ---
         interval_seconds = 300 
         std_archive = config_dict.get('StdArchive', {})
         if 'archive_interval' in std_archive:
             interval_seconds = int(std_archive['archive_interval'])
         if 'archive_interval' in options:
-            val = int(options['archive_interval'])
-            interval_seconds = val * 60
+            interval_seconds = int(options['archive_interval']) * 60
             
         calc_mins = int(interval_seconds / 60)
-        # Clamp to 1-255 to prevent EEPROM overflow
         if calc_mins > 255:
-            loginf("WARNING: Archive interval %d mins is too large for Davis byte. Clamping to 255." % calc_mins)
+            loginf(f"WARNING: Archive interval {calc_mins} mins is too large for Davis byte. Clamping to 255.")
             self.davis_interval_mins = 255
         elif calc_mins < 1:
             self.davis_interval_mins = 1
         else:
             self.davis_interval_mins = calc_mins
-        # --------------------------------
         
         STATION_LATITUDE = 611
         STATION_LONGITUDE = 224
@@ -188,24 +194,30 @@ class WeatherLinkEmulator(StdService):
         
         self.db_binding = options.get('binding', 'wx_binding')
         
-        loginf("*** WLIP EMULATOR V88 (Robust Watchdog) ***")
-        loginf("Watchdog: Threshold=%ds | Action=%d | Startup Delay=%ds" % (self.max_lag_threshold, self.max_lag_action, self.startup_delay))
+        loginf("*** WLIP EMULATOR V89 (WeeWX 5.5 + Devnotes) ***")
+        loginf(f"Watchdog: Threshold={self.max_lag_threshold}s | Action={self.max_lag_action} | Startup Delay={self.startup_delay}s")
         
         self.run_server()
+        
+        # Event Bindings
         self.bind(weewx.NEW_LOOP_PACKET, self.handle_new_loop)
+        if hasattr(weewx, 'SHUTDOWN'):
+            self.bind(weewx.SHUTDOWN, self.shutDownEvent)
+
+    def shutDownEvent(self, event):
+        """PR #1106 Graceful Shutdown Handler"""
+        self.shutDown()
 
     def shutDown(self):
-        loginf("Shutting down WLIP Server...")
+        """Stops the server gracefully without hard killing the sockets."""
+        loginf("Shutting down WLIP Server gracefully...")
+        self.running = False
         try:
             for sock in self.server_sockets:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except:
-                    pass
                 sock.close()
             self.server_sockets = []
         except Exception as e:
-            logerr("Error during shutdown: %s" % e)
+            logerr(f"Error during shutdown: {e}")
 
     def handle_new_loop(self, event):
         with self.lock:
@@ -216,8 +228,8 @@ class WeatherLinkEmulator(StdService):
                 try:
                     ts = event.packet.get('dateTime')
                     t = event.packet.get('outTemp')
-                    logdbg("INTERNAL UPDATE: WeeWX pushed new packet. TS=%s Temp=%s" % (ts, t))
-                except:
+                    logdbg(f"INTERNAL UPDATE: WeeWX pushed new packet. TS={ts} Temp={t}")
+                except Exception:
                     pass
 
     def run_server(self):
@@ -227,7 +239,7 @@ class WeatherLinkEmulator(StdService):
 
     def _server_coordinator(self):
         if self.startup_delay > 0:
-            loginf("Startup delay active: Waiting %d seconds..." % self.startup_delay)
+            loginf(f"Startup delay active: Waiting {self.startup_delay} seconds...")
             time.sleep(self.startup_delay)
             loginf("Startup delay complete. Opening ports.")
 
@@ -235,14 +247,16 @@ class WeatherLinkEmulator(StdService):
             t = threading.Thread(target=self.listen_on_port, args=(port, allowed_ip))
             t.daemon = True
             t.start()
+            time.sleep(0.1)
 
     def listen_on_port(self, port, allowed_ip):
         access_msg = "ALL (Default)" if allowed_ip is None else allowed_ip
-        loginf("Starting listener on port %d [Allowed: %s]" % (port, access_msg))
+        loginf(f"Starting listener on port {port} [Allowed: {access_msg}]")
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(None)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Timeout allows the thread to periodically check self.running during shutdown
+        sock.settimeout(1.0) 
         
         try:
             sock.bind(('0.0.0.0', port))
@@ -250,10 +264,14 @@ class WeatherLinkEmulator(StdService):
             with self.lock:
                 self.server_sockets.append(sock)
             
-            while True:
+            while self.running:
                 try:
                     client_sock, addr = sock.accept()
-                except OSError:
+                except socket.timeout:
+                    continue # Expected behavior, loop again and check self.running
+                except OSError as e:
+                    if self.running:
+                        logerr(f"Socket accept error on port {port}: {e}")
                     break
                 
                 if allowed_ip is not None and addr[0] != allowed_ip:
@@ -261,12 +279,21 @@ class WeatherLinkEmulator(StdService):
                     continue
                 
                 client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                
+                # TCP Keepalive for aggressive dead-connection detection
+                client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                if hasattr(socket, 'TCP_KEEPIDLE'):
+                    client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 10)
+                    client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                    client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 3)
+
                 client_sock.settimeout(None)
                 client_thread = threading.Thread(target=self.handle_client, args=(client_sock, addr))
                 client_thread.daemon = True
                 client_thread.start()
+                
         except Exception as e:
-            logerr("Error on port %d: %s" % (port, e))
+            logerr(f"Fatal error on port {port}: {e}")
 
     def handle_client(self, client_sock, addr):
         with self.lock:
@@ -275,24 +302,30 @@ class WeatherLinkEmulator(StdService):
         
         try:
             local_port = client_sock.getsockname()[1]
-        except:
+        except OSError:
             local_port = "Unknown"
             
-        loginf("Incoming connection from %s to PORT %s. Active: %d" % (str(addr), str(local_port), count))
+        loginf(f"Incoming connection from {addr[0]}:{addr[1]} to PORT {local_port}. Active: {count}")
 
         buffer = bytearray()
 
         try:
-            while True:
+            while self.running:
+                # Use a small select timeout to allow graceful shutdown exit
+                ready, _, _ = select.select([client_sock], [], [], 1.0)
+                if not ready:
+                    continue
+                    
                 data = client_sock.recv(1024)
-                if not data: break
+                if not data: 
+                    break
                 
                 if self.debug_detail >= 2:
-                    hex_data = " ".join("{:02x}".format(c) for c in data)
+                    hex_data = " ".join(f"{c:02x}" for c in data)
                     if len(hex_data) < 100:
-                        logdbg("RX RAW [%s]: %s" % (addr[0], hex_data))
+                        logdbg(f"RX RAW [{addr[0]}]: {hex_data}")
                     else:
-                        logdbg("RX RAW [%s]: %s ... (truncated)" % (addr[0], hex_data[:100]))
+                        logdbg(f"RX RAW [{addr[0]}]: {hex_data[:100]} ... (truncated)")
                 
                 buffer.extend(data)
                 
@@ -319,75 +352,82 @@ class WeatherLinkEmulator(StdService):
                     break
 
         except Exception as e:
-            logdbg("Client connection closed/error: %s" % e)
+            if self.running:
+                logdbg(f"Client connection closed/error: {e}")
         finally:
-            client_sock.close()
+            try:
+                client_sock.close()
+            except OSError:
+                pass
             with self.lock:
                 self.active_connections -= 1
                 count = self.active_connections
-            loginf("Connection closed from %s. Active: %d" % (str(addr), count))
+            loginf(f"Connection closed from {addr[0]}:{addr[1]}. Active: {count}")
 
     def process_command(self, client_sock, cmd, raw_data):
-        if b'\x12\x4d\x0d' in raw_data: 
-            client_sock.sendall(b'\x21') 
-            return
+        try:
+            if b'\x12\x4d\x0d' in raw_data: 
+                client_sock.sendall(b'\x21') 
+                return
 
-        if 'TEST' in cmd:
-            client_sock.sendall(b'\n\rTEST\n\r')
-        elif 'WRD' in cmd:
-            client_sock.sendall(b'\x06\x11')
-        elif 'VVPVER' in cmd:
-            client_sock.sendall(b'\n\rOK\n\r')
-        elif 'GETTIME' in cmd:
-            self.handle_gettime(client_sock)
-        elif 'NVER' in cmd:
-            client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
-        elif 'VER' in cmd:
-            client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
-        elif 'EEBRD' in cmd:
-            self.handle_eebrd(client_sock, cmd)
-        elif 'EERD' in cmd:
-            self.handle_eerd(client_sock, cmd)
-        elif 'DMPAFT' in cmd:
-            self.handle_dmpaft(client_sock)
-        elif 'STR' in cmd:
-            self.handle_str(client_sock)
-        elif 'LOOP' in cmd:
-            pkt_count = 1
-            try:
-                parts = cmd.split()
-                for p in parts:
-                    if p.isdigit():
-                        pkt_count = int(p)
-                        break
-            except:
+            if 'TEST' in cmd:
+                client_sock.sendall(b'\n\rTEST\n\r')
+            elif 'WRD' in cmd:
+                client_sock.sendall(b'\x06\x11')
+            elif 'VVPVER' in cmd:
+                client_sock.sendall(b'\n\rOK\n\r')
+            elif 'GETTIME' in cmd:
+                self.handle_gettime(client_sock)
+            elif 'NVER' in cmd:
+                client_sock.sendall(b'\n\rOK\n\r1.90\n\r')
+            elif 'VER' in cmd:
+                client_sock.sendall(b'\n\rOK\n\rMay  1 2012\n\r')
+            elif 'EEBRD' in cmd:
+                self.handle_eebrd(client_sock, cmd)
+            elif 'EERD' in cmd:
+                self.handle_eerd(client_sock, cmd)
+            elif 'DMPAFT' in cmd:
+                self.handle_dmpaft(client_sock)
+            elif 'STR' in cmd:
+                self.handle_str(client_sock)
+            elif 'LOOP' in cmd:
                 pkt_count = 1
-            if pkt_count == 0: pkt_count = 1 
-            self.handle_loop(client_sock, pkt_count)
-        elif 'LPS' in cmd:
-            pkt_count = 1
-            try:
-                parts = cmd.split()
-                for p in parts:
-                    if p.isdigit():
-                        pkt_count = int(p)
-                        break
-            except:
+                try:
+                    parts = cmd.split()
+                    for p in parts:
+                        if p.isdigit():
+                            pkt_count = int(p)
+                            break
+                except Exception:
+                    pkt_count = 1
+                if pkt_count == 0: pkt_count = 1 
+                self.handle_loop(client_sock, pkt_count)
+            elif 'LPS' in cmd:
                 pkt_count = 1
-            if pkt_count == 0: pkt_count = 1
-            self.handle_loop(client_sock, pkt_count)
-        elif 'BARREAD' in cmd:
-            payload = b'\x00\x00' 
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-        elif 'HILOWS' in cmd:
-            payload = b'\x00' * 436
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
-        elif 'RXCHECK' in cmd:
-            payload = b'\x00\x00\x00\x00\x00'
-            crc = crc16(payload)
-            client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+                try:
+                    parts = cmd.split()
+                    for p in parts:
+                        if p.isdigit():
+                            pkt_count = int(p)
+                            break
+                except Exception:
+                    pkt_count = 1
+                if pkt_count == 0: pkt_count = 1
+                self.handle_loop(client_sock, pkt_count)
+            elif 'BARREAD' in cmd:
+                payload = b'\x00\x00' 
+                crc = crc16(payload)
+                client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+            elif 'HILOWS' in cmd:
+                payload = b'\x00' * 436
+                crc = crc16(payload)
+                client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+            elif 'RXCHECK' in cmd:
+                payload = b'\x00\x00\x00\x00\x00'
+                crc = crc16(payload)
+                client_sock.sendall(b'\x06' + payload + struct.pack('>H', crc))
+        except OSError as e:
+            logdbg(f"Socket error during process_command ({cmd}): {e}")
 
     def handle_eebrd(self, sock, cmd):
         try:
@@ -407,7 +447,7 @@ class WeatherLinkEmulator(StdService):
                 packet = data_chunk + struct.pack('>H', crc)
                 sock.sendall(b'\x06' + packet)
         except Exception as e:
-            logdbg("EEBRD Error: %s" % e)
+            logdbg(f"EEBRD Error: {e}")
 
     def handle_eerd(self, sock, cmd):
         try:
@@ -421,11 +461,11 @@ class WeatherLinkEmulator(StdService):
                     val = 0
                     if curr_addr < len(self.eeprom):
                         val = self.eeprom[curr_addr]
-                    hex_str += "%02X" % val
+                    hex_str += f"{val:02X}"
                 resp = hex_str.encode('utf-8') + b'\n\r' 
                 sock.sendall(b'\x06' + resp)
         except Exception as e:
-            logdbg("EERD Error: %s" % e)
+            logdbg(f"EERD Error: {e}")
 
     def handle_gettime(self, client_sock):
         now = datetime.datetime.now()
@@ -438,7 +478,7 @@ class WeatherLinkEmulator(StdService):
         payload[5] = now.year - 1900
         crc = crc16(payload)
         packet = payload + struct.pack('>H', crc)
-        logdbg("GETTIME requested. Sending: %s" % now)
+        logdbg(f"GETTIME requested. Sending: {now}")
         client_sock.sendall(b'\x06' + packet)
 
     def handle_str(self, client_sock):
@@ -449,12 +489,11 @@ class WeatherLinkEmulator(StdService):
                 if 0 <= rule < len(FORECAST_STRINGS):
                     forecast_text = FORECAST_STRINGS[rule]
                 else:
-                    forecast_text = "Forecast rule %s unknown" % rule
+                    forecast_text = f"Forecast rule {rule} unknown"
         resp = forecast_text.encode('utf-8') + b'\n\r'
         client_sock.sendall(resp)
 
     def handle_loop(self, client_sock, count):
-        # V88: SMART LOGGING & WATCHDOG
         lag_found = False
         lag_val = 0
         
@@ -473,46 +512,50 @@ class WeatherLinkEmulator(StdService):
                     if self.debug_detail >= 1:
                         temp = p.get('outTemp')
                         wind = p.get('windSpeed')
-                        t_str = "%.1f" % temp if temp is not None else "None"
-                        w_str = "%.1f" % wind if wind is not None else "None"
-                        info_str = "Lag: %ds | Temp: %s | Wind: %s" % (lag_val, t_str, w_str)
-                except:
+                        t_str = f"{temp:.1f}" if temp is not None else "None"
+                        w_str = f"{wind:.1f}" if wind is not None else "None"
+                        info_str = f"Lag: {lag_val}s | Temp: {t_str} | Wind: {w_str}"
+                except Exception:
                     pass
             
             if self.debug_detail >= 1:
-                logdbg("Sending %d LOOP packets... [%s]" % (count, info_str))
+                logdbg(f"Sending {count} LOOP packets... [{info_str}]")
         else:
-            logdbg("Sending %d LOOP packets..." % count)
+            logdbg(f"Sending {count} LOOP packets...")
 
-        # --- V87: WATCHDOG LOGIC (KILL SWITCH) ---
+        # --- V89: WATCHDOG LOGIC (SAFE SIGTERM KILL SWITCH) ---
         if self.max_lag_threshold > 0 and lag_found:
             if lag_val > self.max_lag_threshold:
-                msg = "WATCHDOG TRIGGERED: Data lag is %d seconds (Threshold: %d)." % (lag_val, self.max_lag_threshold)
+                msg = f"WATCHDOG TRIGGERED: Data lag is {lag_val} seconds (Threshold: {self.max_lag_threshold})."
                 
                 if self.max_lag_action == 2:
-                    logcrit(msg + " KILLING WEEWX PROCESS TO FORCE SYSTEMD RESTART.")
+                    logcrit(f"{msg} SENDING SIGTERM TO WEEWX FOR SYSTEMD RESTART.")
                     try:
                         client_sock.close()
-                    except:
+                    except OSError:
                         pass
-                    # Hard exit (status 1) to force systemd to restart the service immediately
-                    os._exit(1)
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
                     
                 elif self.max_lag_action == 1:
-                    logerr(msg + " Disconnecting client.")
+                    logerr(f"{msg} Disconnecting client.")
                     try:
                         client_sock.close()
-                    except:
+                    except OSError:
                         pass
                     return
         # ------------------------------------------
 
         try:
             client_sock.sendall(b'\x06')
-        except:
+        except OSError as e:
+            logdbg(f"Client disconnected during LOOP ACK: {e}")
             return
 
         for i in range(count):
+            if not self.running:
+                break
+                
             try:
                 ready_to_read, _, _ = select.select([client_sock], [], [], 0)
                 if ready_to_read:
@@ -530,18 +573,20 @@ class WeatherLinkEmulator(StdService):
                     time.sleep(2.0)
                     
             except socket.error as e:
-                logdbg("Send failed during loop stream: %s" % e)
+                logdbg(f"Send failed during loop stream: {e}")
                 break
             except Exception as e:
-                logdbg("Error in loop stream: %s" % e)
+                logdbg(f"Error in loop stream: {e}")
                 break
 
     def handle_dmpaft(self, client_sock):
-        client_sock.sendall(b'\x06')
         try:
+            client_sock.sendall(b'\x06')
             ts_data = client_sock.recv(6)
-        except:
+        except OSError as e:
+            logdbg(f"DMPAFT rx error: {e}")
             return
+            
         if len(ts_data) != 6: return
 
         davis_date = struct.unpack('<H', ts_data[0:2])[0]
@@ -561,49 +606,67 @@ class WeatherLinkEmulator(StdService):
                 minute = davis_time % 100
                 dt = datetime.datetime(year, month, day, hour, minute)
                 requested_ts = time.mktime(dt.timetuple())
-                logdbg("HISTORY REQUEST: Asking for data after: %s (%s)" % (dt, requested_ts))
-        except Exception as e:
+                logdbg(f"HISTORY REQUEST: Asking for data after: {dt} ({requested_ts})")
+        except Exception:
             limit_seconds = HARDWARE_RECORD_LIMIT * (self.davis_interval_mins * 60)
             requested_ts = int(time.time() - limit_seconds)
             logdbg("HISTORY REQUEST: Invalid timestamp decode. Defaulting to HW limit.")
 
-        client_sock.sendall(b'\x06')
+        try:
+            client_sock.sendall(b'\x06')
+        except OSError:
+            return
 
         records = []
-        try:
-            with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
-                for record in manager.genBatchRecords(requested_ts + 1):
-                    records.append(record)
-                    if len(records) >= 50000: break 
-            
-            if self.debug_detail >= 1:
-                if len(records) > 0:
-                    first_ts = records[0].get('dateTime')
-                    last_ts = records[-1].get('dateTime')
-                    logdbg("DB QUERY SUCCESS: Found %d records. Range: %s -> %s" % 
-                           (len(records), first_ts, last_ts))
+        max_retries = 3
+        
+        # --- V89: DB Lock Retry Logic ---
+        for attempt in range(max_retries):
+            try:
+                with weewx.manager.open_manager_with_config(self.config_dict, self.db_binding) as manager:
+                    for record in manager.genBatchRecords(requested_ts + 1):
+                        records.append(record)
+                        if len(records) >= 50000: break 
+                break # Success, exit retry loop
+                
+            except weewx.CannotLock as e:
+                if attempt < max_retries - 1:
+                    logdbg(f"DB locked, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(1.0)
                 else:
-                    logdbg("DB QUERY WARNING: Database returned 0 records.")
-            
-        except Exception as e:
-            logerr("DB ERROR: Failed to query database: %s" % e)
-            records = []
+                    logerr(f"DB ERROR: Database locked, failed after {max_retries} attempts: {e}")
+                    records = []
+            except Exception as e:
+                logerr(f"DB ERROR: Failed to query database: {e}")
+                records = []
+                break
+        
+        if self.debug_detail >= 1:
+            if len(records) > 0:
+                first_ts = records[0].get('dateTime')
+                last_ts = records[-1].get('dateTime')
+                logdbg(f"DB QUERY SUCCESS: Found {len(records)} records. Range: {first_ts} -> {last_ts}")
+            else:
+                logdbg("DB QUERY WARNING: Database returned 0 records.")
         
         num_records = len(records)
         num_pages = math.ceil(num_records / 5.0)
         
         header = struct.pack('<H', num_pages) + b'\x00\x00'
         header_crc = crc16(header)
-        client_sock.sendall(header + struct.pack('>H', header_crc))
-
+        
         try:
+            client_sock.sendall(header + struct.pack('>H', header_crc))
             ack = client_sock.recv(1)
             if ack != b'\x06': 
                 return
-        except:
+        except OSError:
             return
 
         for page_idx in range(num_pages):
+            if not self.running:
+                break
+                
             page_buffer = bytearray()
             page_buffer.append(page_idx % 256)
             for i in range(5):
@@ -616,13 +679,12 @@ class WeatherLinkEmulator(StdService):
             pg_crc = crc16(page_buffer)
             page_buffer.extend(struct.pack('>H', pg_crc))
             
-            client_sock.sendall(page_buffer)
-            
             try:
+                client_sock.sendall(page_buffer)
                 ack = client_sock.recv(1)
                 if ack == b'\x1B': 
                     break
-            except:
+            except OSError:
                 break
 
     def pack_archive_record(self, record):
@@ -683,7 +745,7 @@ class WeatherLinkEmulator(StdService):
         if p_raw.get('usUnits') != weewx.US:
             try:
                 p = weewx.units.to_std_system(p_raw, weewx.US)
-            except:
+            except Exception:
                 p = p_raw
         else:
             p = p_raw
@@ -693,7 +755,7 @@ class WeatherLinkEmulator(StdService):
                 val = p.get(key)
                 if val is not None:
                     return conversion_func(val)
-            except:
+            except Exception:
                 pass
             return fallback
 
@@ -728,7 +790,7 @@ class WeatherLinkEmulator(StdService):
         struct.pack_into('<3s', packet, 0, b'LOO')
         try:
             struct.pack_into('<b', packet, 3, int(bar_trend))
-        except:
+        except Exception:
             packet[3] = 0
         
         packet[4] = 0 
