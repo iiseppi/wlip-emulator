@@ -1,6 +1,6 @@
 # installer derived from the weewx Belchertown skin installer
 # https://raw.githubusercontent.com/poblabs/weewx-belchertown/master/install.py
-# which was Copyright Pat O'Brien, with re-fomatting from a PR by Vince Skahan 
+# which was Copyright Pat O'Brien, with re-formatting from a PR by Vince Skahan 
 
 import configobj
 from setup import ExtensionInstaller
@@ -10,7 +10,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "0.6"
+VERSION      = "89" # Updated to match release 
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'WeatherLinkIP Emulator'
 AUTHOR       = "iiseppi"
@@ -19,11 +19,11 @@ AUTHOR_EMAIL = "iiseppi@gmail.com"
 #-------- main loader -----------
 
 def loader():
-    return WundergroundLikeInstaller()
+    return WlipEmulatorInstaller() # Luokan nimi päivitetty
 
-class WundergroundLikeInstaller(ExtensionInstaller):
+class WlipEmulatorInstaller(ExtensionInstaller): # Luokan nimi päivitetty
     def __init__(self):
-        super(WundergroundLikeInstaller, self).__init__(
+        super(WlipEmulatorInstaller, self).__init__(
             version=VERSION,
             name=NAME,
             description=DESCRIPTION,
