@@ -7,7 +7,9 @@ The emulator acts as a bridge: it reads weather data from your WeeWX database (r
 
 ---
 
-## ✨ Key Features (Version 88)
+## ✨ Key Features (Version 89)
+
+**New in V89:** Fully modernized for WeeWX 5.5+ standards. Uses the new `weewx.SHUTDOWN` event to close network sockets gracefully. This eliminates the infamous "Address already in use" port errors when restarting WeeWX. Includes TCP Keepalive to instantly detect and drop dead client connections.
 
 ### 🛡️ Robust Watchdog (Self-Healing)
 
