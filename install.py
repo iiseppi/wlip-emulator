@@ -10,7 +10,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "92" # Updated to match release
+VERSION      = "93" # Updated to match release
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'WeatherLinkIP Emulator'
 AUTHOR       = "iiseppi"

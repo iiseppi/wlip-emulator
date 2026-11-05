@@ -213,6 +213,18 @@ class TestWeatherLinkPCReplay(EmulatorTestBase):
         self.assertEqual(eeprom[0x2B], 0xDD)
         self.assertEqual(eeprom[0x2D], INTERVAL // 60)
 
+    def test_station_list_like_a_console(self):
+        """EEBRD 19 10, the transmitter list WeatherLink PC reads: ISS on transmitter 1
+        with FF in its second byte and the others unused, as a Vantage Pro2 console
+        answers in the serial dump of issue 8."""
+        s = self.connect()
+        self.wake(s)
+        s.sendall(b'EEBRD 19 10\n')
+        reply = self.recv_exact(s, 1 + 16 + 2)
+        self.assertEqual(reply[0:1], ACK)
+        self.assertEqual(crc16(reply[1:]), 0)
+        self.assertEqual(reply[1:17], bytes.fromhex('00ff' + '0aff' * 7))
+
     def test_ver(self):
         s = self.connect()
         self.wake(s)
@@ -327,6 +339,34 @@ class TestWeatherLinkPCReplay(EmulatorTestBase):
         s = self.connect()
         npages, _ = self.dmpaft(s, self.last_ts)
         self.assertEqual(npages, 0)
+        self.wake(s)
+
+    def test_dmpaft_future_time_stamp_gets_whole_memory(self):
+        """A time stamp after the newest record is not in the archive, so a console sends
+        its whole memory (Davis serial protocol, DMPAFT). The serial dump in issue 8 shows
+        a WeatherLink station whose newest record is dated 2125 getting all 513 pages
+        from the console on every download. The emulator sends the newest 2560 records,
+        whatever max_dmpaft_records and new_station_history say."""
+        self.emulator.max_dmpaft_records = 100
+        self.addCleanup(setattr, self.emulator, 'max_dmpaft_records', 50000)
+        self.emulator.new_station_history = 'all'
+        self.addCleanup(setattr, self.emulator, 'new_station_history', 'recent')
+        s = self.connect()
+        self.wake(s)
+        s.sendall(b'DMPAFT\n')
+        self.assertEqual(self.recv_exact(s, 1), ACK)
+        s.sendall(bytes.fromhex('58fa790066aa'))      # 2125-02-24 01:21, from the dump
+        self.assertEqual(self.recv_exact(s, 1), ACK)
+        header = self.recv_exact(s, 6)
+        self.assertEqual(crc16(header), 0)
+        npages, start = struct.unpack('<HH', header[:4])
+        self.assertEqual(npages, math.ceil(min(N_RECORDS, 2560) / 5))
+        got = self.download(s, npages, start)
+        self.assertEqual([r['dateTime'] for r in got], [r['dateTime'] for r in self.records])
+        # One archive interval after the newest record is not in the archive either.
+        npages, _ = self.dmpaft(s, self.last_ts + INTERVAL)
+        self.assertEqual(npages, math.ceil(N_RECORDS / 5))
+        s.sendall(b'\x1b')
         self.wake(s)
 
     def test_dmpaft_resend_and_cancel(self):

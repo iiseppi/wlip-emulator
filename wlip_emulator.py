@@ -1,7 +1,14 @@
 # WLIP Emulator for WeeWX
-# Version: 92 (WeatherLink PC: long downloads and whole history)
+# Version: 93 (behaves like a console found in a real serial capture)
 #
 # Changes:
+# - V93: Matches a Vantage Pro2 console in the serial dump of GitHub issue 8.
+#        * DMPAFT with a time stamp after the newest record sends the newest 2560
+#          records. A console cannot find such a time stamp and sends its whole memory
+#          (Davis serial protocol). A WeatherLink PC station whose newest record is
+#          dated in the future (2125 in the dump) used to get no records at all.
+#        * The EEPROM station list built from [Station] has FF as the second ISS byte,
+#          as a console has (it was 00).
 # - V92: Long WeatherLink PC downloads and the whole history.
 #        * DMPAFT sends the page header at once (from a COUNT query capped at the
 #          download size) and reads the records 100 at a time as the pages are asked
@@ -108,7 +115,7 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-VERSION = "92"
+VERSION = "93"
 
 DB_LOCKED_ERRORS = tuple(e for e in (getattr(weedb, 'DatabaseLockedError', None),) if e)
 
@@ -176,7 +183,7 @@ EE_ARCHIVE_PERIOD = 0x2D
 # calibration offsets, alarms off).
 EEPROM_TEMPLATE = bytes([
     0xFF, 0x00, 0x00, 0xC7, 0xFF, 0x00, 0x00, 0xF0, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x17, 0x00, 0x01, 0xC8, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0A, 0xFF, 0x0A, 0xFF, 0x0A,
+    0x00, 0x17, 0x00, 0x01, 0xC8, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFF, 0x0A, 0xFF, 0x0A, 0xFF, 0x0A,
     0xFF, 0x0A, 0xFF, 0x0A, 0xFF, 0x0A, 0xFF, 0x0A, 0xFF, 0x7A, 0x85, 0xDD, 0x01, 0x05, 0xF1, 0x0E,
     0xFF, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
@@ -1518,23 +1525,35 @@ class WeatherLinkEmulator(StdService):
         return []
 
     def plan_download(self, since_ts, whole_history=False):
-        """(after_ts, count) for DMPAFT, from two quick index queries so the page header
-        can go out at once. Without a time stamp the client gets what a real console holds
+        """(after_ts, count) for DMPAFT, from quick index queries so the page header can
+        go out at once. Without a time stamp the client gets what a real console holds
         (the newest 2560 records), or with whole_history everything from the oldest record;
-        with one it may get more (extended catch-up)."""
+        with one it may get more (extended catch-up). A time stamp after the newest record
+        gets the newest 2560 records too: a console that cannot find the time stamp sends
+        its whole memory (Davis serial protocol, DMPAFT)."""
         def work(dbm):
             table = dbm.table_name
-            after = since_ts
-            if after is None and whole_history:
-                after = 0
-            elif after is None:
+            since = since_ts
+            whole = whole_history and since_ts is None
+            if since is not None:
+                row = dbm.getSql(f"SELECT MAX(dateTime) FROM {table}")
+                newest = row[0] if row else None
+                if newest is not None and since > newest:
+                    # Seen with a WeatherLink PC station holding a record dated 2125: a
+                    # console answers it with all 513 pages of its memory, every time.
+                    loginf(f"DMPAFT time stamp {time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} "
+                           f"is after the newest record; sending the newest "
+                           f"{HARDWARE_RECORD_LIMIT} records, like a console")
+                    since = None
+            if since is not None:
+                after, limit = since, self.max_dmpaft_records
+            elif whole:
+                after, limit = 0, self.max_dmpaft_records
+            else:
                 row = dbm.getSql(f"SELECT dateTime FROM {table} ORDER BY dateTime DESC "
                                  f"LIMIT 1 OFFSET {HARDWARE_RECORD_LIMIT - 1}")
                 after = row[0] - 1 if row else 0
-            if since_ts is None and not whole_history:
                 limit = HARDWARE_RECORD_LIMIT
-            else:
-                limit = self.max_dmpaft_records
             # Count no further than the limit: a plain COUNT(*) over years of records
             # took more than 3 seconds on a cold cache, longer than the client waits.
             row = dbm.getSql(f"SELECT COUNT(*) FROM (SELECT dateTime FROM {table} "

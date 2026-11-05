@@ -6,7 +6,14 @@ The emulator acts as a bridge: it reads weather data from your WeeWX database (r
 
 ---
 
-## ✨ Key Features (Version 92)
+## ✨ Key Features (Version 93)
+
+### 🔍 Checked Against a Real Console
+
+**New in V93:** a serial capture of WeatherLink PC talking to a Vantage Pro2 console (thanks to the reporter of issue #8) was compared command by command with what the emulator answers. Two differences were fixed:
+
+* **A WeatherLink station with a record dated in the future** asks for data after that date on every download (2125 in the capture). A console cannot find such a time stamp and, as the Davis protocol says, sends its whole memory. The emulator now does the same and sends the newest 2560 records; before V93 the station got no records at all. To get rid of the bogus record, delete it in WeatherLink (**Browse → Choose Date**, last date, **Delete**).
+* **Station list in the EEPROM** (built from `[Station]`) now has the same bytes as a console for the ISS on transmitter 1.
 
 ### 📚 Long Downloads and the Whole History
 
@@ -219,6 +226,8 @@ PYTHONPATH=/path/to/weewx/src python3 -m unittest discover -s tests -v
 ---
 
 ## 📜 Changelog
+
+**V93:** `DMPAFT` with a time stamp after the newest record sends the newest 2560 records, like a console that cannot find the time stamp (a WeatherLink station with a record dated 2125 used to get nothing); ISS station list bytes match a console. Both found in the serial capture of issue #8.
 
 **V92:** `DMPAFT` header sent at once (capped count query) and records read 100 at a time (fixes the WeatherLink PC time-out on long downloads and WeeWX restarts on "database is locked"); up to 5 minutes for WeatherLink's download confirmation; `max_dmpaft_records` limited to 65535 pages; `new_station_history = all` gives a new WeatherLink station the whole database.
 
