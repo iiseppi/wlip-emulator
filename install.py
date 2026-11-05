@@ -10,7 +10,7 @@ from io import StringIO
 
 #-------- extension info -----------
 
-VERSION      = "89" # Updated to match release 
+VERSION      = "92" # Updated to match release
 NAME         = 'wlip-emulator'
 DESCRIPTION  = 'WeatherLinkIP Emulator'
 AUTHOR       = "iiseppi"
@@ -75,6 +75,14 @@ extension_config = """
     # client_mapping = 192.168.X.X:22223
 
     binding = wx_binding
+
+    # 7. Davis protocol (optional, see README)
+    # station_type = 16        # 16 = Vantage Pro/Pro2 (WeatherLink PC), 17 = Vantage Vue
+    # eeprom_source = auto     # auto, console or station
+    # rain_bucket = auto       # auto, 0 = 0.01 in, 1 = 0.2 mm, 2 = 0.1 mm
+    # protocol_timeout = 10
+    # max_dmpaft_records = 50000    # records per download when the client sends a time stamp
+    # new_station_history = recent  # recent = newest 2560 records, all = whole database
 """
 config_dict = configobj.ConfigObj(StringIO(extension_config))
 
